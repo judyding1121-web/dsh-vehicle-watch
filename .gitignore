@@ -1,0 +1,21 @@
+# 依赖（本地 link 安装时需自行 pnpm install）
+node_modules/
+
+# 运行时产物：绝对不要提交抓取结果 / 报表 / 状态
+data/
+reports/
+*.xlsx
+*.csv
+*.jsonl
+*.log
+scan-log*
+
+# 本机配置与密钥（webhook、aibot secret 都写在这里，不进仓库）
+.env
+.env.*
+*.local.*
+config.local.*
+
+# 系统杂物
+.DS_Store
+Thumbs.db

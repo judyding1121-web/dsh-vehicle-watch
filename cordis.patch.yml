@@ -1,0 +1,46 @@
+- insert:
+    - id: vehicle-watch
+      name: '@local/dsh-vehicle-watch'
+      config:
+        scanIntervalHours: 2
+        startupDelaySec: 30
+        maxPushPerRun: 8
+        notifyOnFirstRun: true
+        priceDropAbs: 1000
+        cityCode: xa
+        cityName: 西安
+        targets:
+          - id: xiaomi-su7
+            name: 小米SU7
+            usedCarUrl: https://www.guazi.com/xa/xiaomiqiche/xiaomisu7/
+            referenceOfficialLow: 219900
+            referenceOfficialHigh: 303900
+            enabled: true
+          - id: lixiang-i6
+            name: 理想i6
+            usedCarUrl: https://www.guazi.com/xa/lixiang/lixiangi6/
+            referenceOfficialLow: 249800
+            referenceOfficialHigh: 269800
+            enabled: true
+          - id: aito-m7
+            name: 问界M7
+            usedCarUrl: https://www.guazi.com/xa/aito/wenjiem7/
+            referenceOfficialLow: 279800
+            referenceOfficialHigh: 389800
+            enabled: true
+          - id: zeekr-001
+            name: 极氪001
+            usedCarUrl: https://www.guazi.com/xa/jike/jk001/
+            referenceOfficialLow: 269800
+            referenceOfficialHigh: 365000
+            enabled: true
+        notify:
+          wecomWebhook: ''
+          feishuWebhook: ''
+          feishuSecret: ''
+          timeoutMs: 10000
+        report:
+          enabled: true
+          dir: ''
+          pythonPath: python3
+          keepDays: 30

@@ -1,0 +1,44 @@
+{
+  "name": "@local/dsh-vehicle-watch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "监控西安四款车型（小米SU7/理想i6/问界M7/极氪001）的瓜子二手车新上架与降价，推送到企业微信/飞书。",
+  "license": "MIT",
+  "keywords": ["dsh", "cordis", "dsh-bundle", "used-car", "guazi"],
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "src/**/*.js",
+    "scripts/**/*.py",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-home-paths": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.5"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "scripts": {
+    "test": "node scripts/selftest.mjs",
+    "check": "for f in index.js src/*.js scripts/*.mjs; do node --check \"$f\" || exit 1; done && echo 'syntax ok'"
+  }
+}

@@ -1,0 +1,146 @@
+#!/usr/bin/env node
+/**
+ * 自测：不依赖企业微信回调，直接跑命令处理器，验证：
+ * 1) 任意品牌+车型解析（理想L9 → lixiangl9）
+ * 2) 多车系查询（宋L → EV/DM-i）
+ * 3) 已监控车型精确匹配（小米SU7 不再被“理想”影响）
+ * 4) 卡片数量 = 1 概览 + 5 详情
+ * 5) pending 是否写入正确候选
+ *
+ * 运行：node plugins/dsh-vehicle-watch/scripts/selftest.mjs
+ */
+import assert from 'node:assert/strict'
+import { createCommandHandler } from '../src/commands.js'
+
+const NOW = '2026-10-20T12:47:02+08:00'
+
+function makeService({ targets = [], latest = null } = {}) {
+  const pendingMap = new Map()
+  const sentCards = []
+  const added = []
+  return {
+    sentCards,
+    added,
+    pendingMap,
+    async status() {
+      return {
+        targets,
+        webhooks: { wecom: true },
+        lastRun: { scannedAt: NOW },
+      }
+    },
+    async readLatest() {
+      return latest
+    },
+    async pending(key) {
+      return pendingMap.get(key) ?? null
+    },
+    async setPendingEntry(key, value) {
+      pendingMap.set(key, { ...value, createdAt: NOW })
+      return pendingMap.get(key)
+    },
+    async clearPendingEntry(key) {
+      pendingMap.delete(key)
+    },
+    async addTargets(candidates) {
+      added.push(...candidates)
+      return { added: candidates, skipped: [] }
+    },
+    async scan() {
+      return { ok: true }
+    },
+    async sendCards(cards) {
+      sentCards.push(...cards)
+      return cards.map(() => ({ wecom: 'ok' }))
+    },
+  }
+}
+
+function makeLatest(target) {
+  const listings = Array.from({ length: 6 }, (_, i) => ({
+    targetId: target.id, title: `2024款 测试车 ${i + 1}`, modelYear: 2024, trim: 'Pro',
+    licenseYear: 2025, mileageKm: 5000 + i * 1000, priceYuan: 180000 + i * 1000,
+    detailUrl: `https://www.guazi.com/car-detail/c${i + 1}.html`,
+  }))
+  return {
+    generatedAt: NOW,
+    targets: [{
+      targetId: target.id, seriesName: target.name, url: target.url,
+      price: { min: 180000 }, newListings: listings.slice(0, 3),
+    }],
+    listings,
+  }
+}
+
+const SU7 = {
+  id: 'xiaomi-su7', name: '小米SU7', url: 'https://www.guazi.com/xa/xiaomiqiche/xiaomisu7/',
+  initialized: true, sampleCount: 38, medianPrice: 215350, lastScanAt: NOW,
+}
+
+const cases = []
+async function test(name, fn) {
+  try {
+    await fn()
+    cases.push({ name, ok: true })
+    console.log(`✓ ${name}`)
+  } catch (err) {
+    cases.push({ name, ok: false, err })
+    console.error(`✗ ${name}\n  ${err.message}`)
+  }
+}
+
+await test('理想L9：解析为 lixiangl9，发 1 概览 + 5 详情，不返回理想i6', async () => {
+  const service = makeService({ targets: [SU7] })
+  const handler = createCommandHandler({ service, log: console })
+  const reply = await handler({ text: '@机器人 找个理想L9', chatid: 'g1', from: 'u1' })
+  assert.equal(service.sentCards.length, 6, '应发 6 张卡（1 概览 + 5 详情）')
+  assert.ok(String(reply.text).includes('5 张详情卡'), '应提示已发 5 张详情卡')
+  assert.ok(!JSON.stringify(service.sentCards).includes('理想i6'), '不应出现理想i6')
+  assert.ok(service.sentCards[0].card_action.url.includes('lixiangl9'), '概览卡应跳到理想L9车系')
+  assert.ok(service.sentCards[1].main_title.title.includes('理想L9'), '详情卡应属于理想L9')
+  const pending = service.pendingMap.get('g1:u1')
+  assert.ok(pending, '应写入 pending')
+  assert.equal(pending.candidates[0].id, 'lixiangl9')
+})
+
+await test('宋L：解析出 EV/DM-i 多车系，1 概览 + 5 详情', async () => {
+  const service = makeService({ targets: [SU7] })
+  const handler = createCommandHandler({ service, log: console })
+  const reply = await handler({ text: '找宋L', chatid: 'g2', from: 'u2' })
+  assert.ok(String(reply.text).includes('5 张详情卡'))
+  assert.equal(service.sentCards.length, 6)
+  assert.ok(JSON.stringify(service.sentCards).includes('宋L EV'))
+  assert.ok(JSON.stringify(service.sentCards).includes('宋L DM-i'))
+  const pending = service.pendingMap.get('g2:u2')
+  assert.equal(pending.candidates.length, 2)
+})
+
+await test('已监控小米SU7：1 概览 + 5 详情卡片', async () => {
+  const service = makeService({ targets: [SU7], latest: makeLatest(SU7) })
+  const handler = createCommandHandler({ service, log: console })
+  const reply = await handler({ text: '看看小米SU7', chatid: 'g3', from: 'u3' })
+  assert.equal(service.sentCards.length, 6, '应发 1 概览 + 5 详情')
+  assert.ok(service.sentCards[0].main_title.title.includes('小米SU7'))
+  assert.ok(String(reply.text).includes('5 张详情卡'))
+})
+
+await test('查行情：1 汇总卡 + 5 详情卡', async () => {
+  const service = makeService({ targets: [SU7], latest: makeLatest(SU7) })
+  const handler = createCommandHandler({ service, log: console })
+  const reply = await handler({ text: '查', chatid: 'g4', from: 'u4' })
+  assert.equal(service.sentCards.length, 6, '应发 1 概览 + 5 详情')
+  assert.ok(service.sentCards[0].main_title.title.includes('行情'))
+  assert.ok(String(reply.text).includes('5 张详情卡'))
+})
+
+await test('最新：1 概览 + 5 详情卡', async () => {
+  const service = makeService({ targets: [SU7], latest: makeLatest(SU7) })
+  const handler = createCommandHandler({ service, log: console })
+  const reply = await handler({ text: '最新', chatid: 'g5', from: 'u5' })
+  assert.equal(service.sentCards.length, 6, '应发 1 概览 + 5 详情')
+  assert.ok(String(reply.text).includes('5 张详情卡'))
+})
+
+const failed = cases.filter((c) => !c.ok)
+console.log(`\n${cases.length - failed.length}/${cases.length} passed`)
+if (failed.length) process.exit(1)
