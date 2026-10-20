@@ -1,16 +1,77 @@
 #!/usr/bin/env node
 /**
- * 自测：不依赖企业微信回调，直接跑命令处理器，验证：
+ * 自测：不依赖企业微信回调，默认也不访问外网，直接跑命令处理器，验证：
  * 1) 任意品牌+车型解析（理想L9 → lixiangl9）
  * 2) 多车系查询（宋L → EV/DM-i）
  * 3) 已监控车型精确匹配（小米SU7 不再被“理想”影响）
  * 4) 卡片数量 = 1 概览 + 5 详情
  * 5) pending 是否写入正确候选
  *
+ * 默认用固定 fixture 伪造瓜子页面（CI 稳定）；要连真实页面跑：
+ *   SELFTEST_ONLINE=1 node scripts/selftest.mjs
+ *
  * 运行：node plugins/dsh-vehicle-watch/scripts/selftest.mjs
  */
 import assert from 'node:assert/strict'
 import { createCommandHandler } from '../src/commands.js'
+
+// ---- 离线 fixture：构造一份最小的 self.__next_f initData 页面，替代真实瓜子请求 ----
+const FIXTURE_CARS = Array.from({ length: 6 }, (_, i) => ({
+  skuPicArea: { pictureUrl: null },
+  skuBasicArea: {
+    encryptedClueId: `c17175119629635${i}`,
+    title: `小米汽车 小米SU7 2024款 ${['后驱长续航智驾版', 'Pro版', 'Max版'][i % 3]}`,
+    licenseDate: '2025年',
+    carSourceCityDesc: '西安',
+    roadHaul: `${(0.56 + i * 0.2).toFixed(2)}万公里`,
+  },
+  scoreArea: {},
+  priceArea: {
+    purchasePrice: { value: String(18 + i), unit: '万', amountMajor: (18 + i) * 10000 },
+    discountedAmount: { amountMajor: 5000 + i * 100 },
+  },
+  skuPredictArea: {},
+  liveArea: {},
+  bottomArea: {},
+  countdownArea: {},
+}))
+
+const FIXTURE_PAYLOAD = JSON.stringify({ initData: { page: 1, totalPage: 10, total: 40, carList: FIXTURE_CARS } })
+const FIXTURE_HTML = '<html><body><script>self.__next_f.push([1,'
+  + JSON.stringify(FIXTURE_PAYLOAD)
+  + '])</script></body></html>'
+
+// 车型解析器要抓「城市页 → 品牌页」才拿得到车系链接，离线时也要给出最小可解析页面
+const CITY_HTML = '<html><body>'
+  + ['lixiang', 'nio', 'xiaomiqiche'].map((slug) => `<a href="/xa/${slug}/">${slug}</a>`).join('')
+  + '</body></html>'
+const SERIES_HTML = {
+  lixiang: '<html><body><a href="/xa/lixiang/lixiangl9/">理想L9</a>'
+    + '<script>{"name":"理想L9","value":"lixiangl9"}</script></body></html>',
+  nio: '<html><body><a href="/xa/nio/wles8/">蔚来ES8</a>'
+    + '<script>{"name":"蔚来ES8","value":"wles8"}</script></body></html>',
+}
+
+function fixturePage(url) {
+  let u
+  try { u = new URL(String(url)) } catch { return FIXTURE_HTML }
+  if (!u.hostname.endsWith('guazi.com')) return null
+  if (/^\/xa\/?$/.test(u.pathname)) return CITY_HTML
+  const m = u.pathname.match(/^\/xa\/([a-z0-9_-]+)\/?$/)
+  if (m) return SERIES_HTML[m[1]] ?? '<html></html>'
+  return FIXTURE_HTML
+}
+
+if (process.env.SELFTEST_ONLINE !== '1') {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const html = fixturePage(input)
+    if (html !== null) {
+      return new Response(html, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
+    }
+    return realFetch(input, init)
+  }
+}
 
 const NOW = '2026-10-20T12:47:02+08:00'
 

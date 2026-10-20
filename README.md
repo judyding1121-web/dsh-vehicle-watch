@@ -1,5 +1,9 @@
 # dsh-vehicle-watch
 
+[![CI](https://github.com/judyding1121-web/dsh-vehicle-watch/actions/workflows/ci.yml/badge.svg)](https://github.com/judyding1121-web/dsh-vehicle-watch/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![DSH](https://img.shields.io/badge/DSH-0.2.1--rc.2-blue)](https://github.com/judyding1121-web/dsh-vehicle-watch)
+
 > GitHub: https://github.com/judyding1121-web/dsh-vehicle-watch
 
 DeepSeek Harness（DSH）Host 插件 / Cordis bundle：监控**西安** **小米SU7 / 理想i6 / 问界M7 / 极氪001** 的瓜子二手车，新上架或降价时推送到企业微信、飞书，并生成 Excel 报表。
@@ -177,6 +181,18 @@ pnpm pack           # 生成 dsh-vehicle-watch-0.1.0.tgz
 | DSH 关闭后不跑 | 本插件随 DSH Host 生命周期；要 7×24 需另加 launchd / 常驻服务 |
 
 ---
+
+## 开发
+
+```bash
+pnpm install                  # 只装 ws；@deepseek-ai/* 由 DSH 运行时提供
+pnpm run check                # 所有入口语法检查
+pnpm test                     # 自测：默认离线（固定 fixture），不访问外网
+SELFTEST_ONLINE=1 pnpm test   # 可选：连真实瓜子页面跑一遍
+```
+
+CI（GitHub Actions，`.github/workflows/ci.yml`）在每次 push / PR 时执行：
+`pnpm install --frozen-lockfile` → `pnpm run check` → 离线 `pnpm test` → `pnpm pack` 冒烟。
 
 ## 发布到 GitHub（维护者）
 
