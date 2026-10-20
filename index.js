@@ -11,6 +11,7 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { createService } from './src/service.js'
 import { AibotClient } from './src/aibot.js'
 import { createCommandHandler } from './src/commands.js'
+import { createLlmAnalyzer } from './src/llm-analyzer.js'
 
 export const name = 'vehicle-watch'
 export const inject = ['tools', 'timer']
@@ -40,6 +41,13 @@ export const Config = z.object({
     feishuWebhook: z.string().default(''),
     feishuSecret: z.string().default(''),
     timeoutMs: z.natural().default(10000),
+  }).default({}),
+
+  llm: z.object({
+    enabled: z.boolean().default(true),
+    provider: z.string().default('deepseek-account'),
+    model: z.string().default('deepseek-flash'),
+    timeoutMs: z.natural().default(15000),
   }).default({}),
 
   aibot: z.object({
@@ -76,7 +84,14 @@ export function apply(ctx, config) {
   // 企业微信「智能机器人」双向通道：接收文本指令并回复（WebSocket 长连接）
   let aibot = null
   if (config.aibot?.enabled && config.aibot.botId && config.aibot.secret) {
-    const handler = createCommandHandler({ service, log })
+    const analyzer = config.llm?.enabled === false ? null : createLlmAnalyzer({
+      getLlm: () => { try { return ctx.get('llm') } catch { return null } },
+      provider: config.llm?.provider,
+      model: config.llm?.model,
+      timeoutMs: config.llm?.timeoutMs,
+      log,
+    })
+    const handler = createCommandHandler({ service, log, analyzer })
     aibot = new AibotClient({
       botId: config.aibot.botId,
       secret: config.aibot.secret,

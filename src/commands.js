@@ -34,6 +34,11 @@ function normalize(text) {
   return String(text ?? '').replace(/@\S+/g, ' ').replace(/\s+/g, '').toLowerCase()
 }
 
+function isConfirmText(text) {
+  return /^[0-9]$/.test(text) ||
+    /^(加入|不加入|不要|不加|取消|算了|两个|两个都加|都加|全加|要|是|好|可以|行)$/.test(text)
+}
+
 function listingLine(l, index) {
   const parts = [
     l.modelYear ? `${l.modelYear}款` : null,
@@ -247,7 +252,7 @@ function detectConfigured(text, status) {
   return hit ? status.targets.find((t) => t.id === hit.id) ?? null : null
 }
 
-export function createCommandHandler({ service, log = console }) {
+export function createCommandHandler({ service, log = console, analyzer = null }) {
   async function fetchHtml(url) {
     const res = await fetch(url, {
       headers: {
@@ -454,13 +459,11 @@ ${question}`, card: null }
 
     const pending = await service.pending(key)
     if (pending) {
-      if (pending.expired) {
-        await service.clearPendingEntry(key)
-        return '上一个“是否加入监控”的询问已过期，请重新发“找宋L”。'
+      if (!pending.expired && isConfirmText(normalized)) {
+        return handleConfirm(pending, normalized, key)
       }
-      const isConfirm = /^[1-9]$|加入|不加入|不要|不加|取消|算了|两个|都加|全加|要|是|好|^0$/.test(normalized)
-      if (isConfirm) return handleConfirm(pending, normalized, key)
-      // 用户换了一个问题：结束上一个询问，继续识别新意图
+      // pending 过期、或用户直接发起了新问题：清掉旧询问，继续处理当前消息。
+      // 不能因为“上一个询问过期”就把用户的新查询吞掉。
       await service.clearPendingEntry(key)
     }
 
@@ -479,13 +482,38 @@ ${question}`, card: null }
     const configured = detectConfigured(normalized, status)
     if (configured) return targetReply(configured.id)
 
-    // 2) 任意品牌+车型：解析瓜子车系（理想L9 / 小米YU7 / 比亚迪宋L ...）
+    // 2) 任意品牌+车型：先规则解析；失败再用模型理解一次模糊说法
     let resolved = null
     try {
       resolved = await resolveModels(raw)
     } catch (err) {
       log.warn?.('resolve model failed: %s', err.message)
     }
+
+    let guess = null
+    if (!resolved?.models?.length && analyzer) {
+      try {
+        guess = await analyzer(raw)
+        if (guess?.brand && guess?.model) {
+          const second = await resolveModels(`${guess.brand}${guess.model}`)
+          if (second?.models?.length) resolved = second
+        }
+      } catch (err) {
+        log.warn?.('llm analyze failed: %s', err.message)
+      }
+    }
+
+    // 模型也解析不出具体车系：把候选列给用户确认，不瞎猜结果
+    if (!resolved?.models?.length && guess) {
+      const alt = [guess, ...(guess.alternatives ?? [])]
+        .filter((x) => x?.brand && x?.model)
+        .map((x) => `${x.brand}${x.model}`)
+      const unique = [...new Set(alt)]
+      if (unique.length) {
+        return `我没能直接确定车型。你要找的是不是：${unique.join(' / ')}？\n请回复具体“品牌+车型”，例如“理想L9”。`
+      }
+    }
+
     if (resolved?.models?.length) {
       const title = `${resolved.brand}${resolved.model}`.trim()
       const reply = await lookup(resolved.models, status, title)
@@ -495,7 +523,10 @@ ${question}`, card: null }
       return reply
     }
     if (resolved && !resolved.models.length) {
-      return `没找到「${resolved.brand}${resolved.model || ''}」的瓜子车系。请带上品牌+车型，如“理想L9”“小米YU7”。`
+      if (!resolved.model) return `已识别品牌「${resolved.brand}」，请补充具体车型，例如“${resolved.brand}L9”。`
+      const alternatives = (guess?.alternatives ?? []).map((x) => `${x.brand}${x.model}`)
+      const tip = alternatives.length ? `\n你要找的是不是：${alternatives.join(' / ')}？` : ''
+      return `我在瓜子没找到「${resolved.brand}${resolved.model}」。${tip}\n请回复具体“品牌+车型”，例如“理想L9”“蔚来ES8”。`
     }
 
     // 3) 目录兜底（宋L 这类口语简称）

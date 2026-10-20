@@ -5,6 +5,14 @@
   "description": "监控西安四款车型（小米SU7/理想i6/问界M7/极氪001）的瓜子二手车新上架与降价，推送到企业微信/飞书。",
   "license": "MIT",
   "keywords": ["dsh", "cordis", "dsh-bundle", "used-car", "guazi"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/judyding1121-web/dsh-vehicle-watch.git"
+  },
+  "homepage": "https://github.com/judyding1121-web/dsh-vehicle-watch#readme",
+  "bugs": {
+    "url": "https://github.com/judyding1121-web/dsh-vehicle-watch/issues"
+  },
   "type": "module",
   "exports": {
     ".": "./index.js",

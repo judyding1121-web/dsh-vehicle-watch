@@ -89,8 +89,9 @@ function extractModel(query, brandName) {
   let rest = query
   const idx = rest.indexOf(brandName)
   if (idx >= 0) rest = rest.slice(idx + brandName.length)
-  rest = rest.replace(/^(的|车|款|：|:)/, '')
+  rest = rest.replace(/^(的|那个|那款|这款|一台|一个|一辆|辆|台|车|款|：|:)+/, '')
   rest = rest.replace(/(最新|价格|报价|行情|多少钱|二手|车源|的|了|吗|呢|吧).*$/, '')
+  rest = rest.replace(/[的了吗呢吧]+$/, '')
   return rest.trim()
 }
 

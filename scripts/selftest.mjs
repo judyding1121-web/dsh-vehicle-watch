@@ -141,6 +141,50 @@ await test('最新：1 概览 + 5 详情卡', async () => {
   assert.ok(String(reply.text).includes('5 张详情卡'))
 })
 
+
+await test('pending 过期后新查询仍应执行（蔚来ES8）', async () => {
+  const service = makeService({ targets: [SU7] })
+  service.pendingMap.set('g6:u6', { expired: true, candidates: [{ id: 'songl-ev', name: '宋L EV' }] })
+  const handler = createCommandHandler({ service, log: console })
+  const reply = await handler({ text: '你帮我查一个蔚来的那个ES8', chatid: 'g6', from: 'u6' })
+  assert.ok(!String(reply.text).includes('询问已过期'), '不应被过期 pending 拦截')
+  assert.equal(service.sentCards.length, 6, '应正常查询并发 1+5 张卡')
+  assert.ok(service.sentCards[0].main_title.title.includes('蔚来ES8'))
+  assert.equal(service.pendingMap.get('g6:u6').candidates[0].id, 'wles8')
+})
+
+await test('pending 未过期但用户发新问题：清掉旧询问并执行新查询', async () => {
+  const service = makeService({ targets: [SU7] })
+  service.pendingMap.set('g7:u7', { candidates: [{ id: 'lixiangl9', name: '理想L9' }] })
+  const handler = createCommandHandler({ service, log: console })
+  const reply = await handler({ text: '我要查蔚来ES8', chatid: 'g7', from: 'u7' })
+  assert.equal(service.sentCards.length, 6)
+  assert.ok(service.sentCards[0].main_title.title.includes('蔚来ES8'))
+  assert.equal(service.pendingMap.get('g7:u7').candidates[0].id, 'wles8')
+})
+
+
+await test('模糊说法：规则失败时用模型解析出理想L9', async () => {
+  const service = makeService({ targets: [SU7] })
+  const analyzer = async () => ({ brand: '理想', model: 'L9', confidence: 0.9, alternatives: [] })
+  const handler = createCommandHandler({ service, log: console, analyzer })
+  const reply = await handler({ text: '想买个理想的大六座，有什么二手', chatid: 'g8', from: 'u8' })
+  assert.equal(service.sentCards.length, 6, '应发 1+5 张卡')
+  assert.ok(service.sentCards[0].main_title.title.includes('理想L9'))
+  assert.ok(!String(reply.text).includes('没找到'))
+})
+
+await test('模型也解析不出时：提示用户确认车型，不瞎编结果', async () => {
+  const service = makeService({ targets: [SU7] })
+  const analyzer = async () => ({ brand: '未知', model: '', confidence: 0, alternatives: [{ brand: '理想', model: 'L9' }] })
+  const handler = createCommandHandler({ service, log: console, analyzer })
+  const reply = await handler({ text: '想买个三十万以内的纯电SUV', chatid: 'g9', from: 'u9' })
+  assert.equal(service.sentCards.length, 0)
+  const text = typeof reply === 'string' ? reply : (reply.text || '')
+  assert.ok(String(text).includes('请回复具体'))
+  assert.ok(String(text).includes('理想L9'))
+})
+
 const failed = cases.filter((c) => !c.ok)
 console.log(`\n${cases.length - failed.length}/${cases.length} passed`)
 if (failed.length) process.exit(1)

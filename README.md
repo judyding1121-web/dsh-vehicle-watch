@@ -1,5 +1,7 @@
 # dsh-vehicle-watch
 
+> GitHub: https://github.com/judyding1121-web/dsh-vehicle-watch
+
 DeepSeek Harness（DSH）Host 插件 / Cordis bundle：监控**西安** **小米SU7 / 理想i6 / 问界M7 / 极氪001** 的瓜子二手车，新上架或降价时推送到企业微信、飞书，并生成 Excel 报表。
 
 - 每 2 小时扫一次车系页（第 1 页，40 条/车型），只保留西安车源；
@@ -33,13 +35,13 @@ DeepSeek Harness（DSH）Host 插件 / Cordis bundle：监控**西安** **小米
 
 1. DSH → Web 侧栏 → **插件** → **添加插件** → **安装第三方插件**；
 2. 输入仓库 spec，二选一：
-   - `github:<你的GitHub用户名>/dsh-vehicle-watch`
-   - `https://github.com/<你的GitHub用户名>/dsh-vehicle-watch`
+   - `github:judyding1121-web/dsh-vehicle-watch`
+   - `https://github.com/judyding1121-web/dsh-vehicle-watch`
 3. 安装完成后确认状态是 `applied`（若提示 `restart-required`，重启 DSH）；
 4. 按下面「配置」填写 webhook / 车型；
 5. 30 秒后自动首扫，或让 Agent 调用 `vehicle_usedcar_scan`。
 
-> 也可以让 Agent 调用 `plugin_manager`：`action: install_bundle`、`target: 'github:<用户名>/dsh-vehicle-watch'`。该工具需要 `danger-full-access` 或本次调用审批。
+> 也可以让 Agent 调用 `plugin_manager`：`action: install_bundle`、`target: 'github:judyding1121-web/dsh-vehicle-watch'`。该工具需要 `danger-full-access` 或本次调用审批。
 >
 > 私有仓库：需要本机 Git 凭据（SSH key 或 credential helper/token）。安装前管理器会用 `git ls-remote` 探活，认证失败会继续交给 pnpm，能凭据就绪即可。
 
@@ -48,7 +50,7 @@ DeepSeek Harness（DSH）Host 插件 / Cordis bundle：监控**西安** **小米
 适合改代码 / 离线：
 
 ```bash
-git clone https://github.com/<你的GitHub用户名>/dsh-vehicle-watch.git
+git clone https://github.com/judyding1121-web/dsh-vehicle-watch.git
 cd dsh-vehicle-watch
 pnpm install        # 本地 link 安装不会替你装 ws，必须手动执行一次
 ```
@@ -189,7 +191,7 @@ git commit -m "feat: dsh-vehicle-watch v0.1.0"
 # 有 gh CLI：
 gh repo create dsh-vehicle-watch --public --source=. --push
 # 或网页建空仓库后：
-git remote add origin https://github.com/<用户名>/dsh-vehicle-watch.git
+git remote add origin https://github.com/judyding1121-web/dsh-vehicle-watch.git
 git push -u origin main
 ```
 
