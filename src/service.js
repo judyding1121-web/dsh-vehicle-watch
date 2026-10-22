@@ -42,6 +42,11 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     log,
   })
   let running = false
+  let dashboard = { enabled: false }
+
+  function setDashboard(info) {
+    dashboard = info ?? { enabled: false }
+  }
 
   async function loadTargets() {
     const base = (config.targets ?? []).filter((t) => t.enabled !== false)
@@ -252,6 +257,7 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     const state = await loadState(statePath)
     return {
       source: 'xianyu',
+      dashboard,
       statePath,
       reportDir,
       htmlPath: path.join(reportDir, REPORT_NAME),
@@ -338,7 +344,7 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     return results
   }
 
-  return { scan, lookup, status, generateNow, readLatest, sendCards, loadTargets, addTargets, removeTarget, pending, setPendingEntry, clearPendingEntry }
+  return { scan, lookup, status, generateNow, readLatest, sendCards, loadTargets, addTargets, removeTarget, pending, setPendingEntry, clearPendingEntry, setDashboard }
 }
 
 function toAggCsv(targets) {

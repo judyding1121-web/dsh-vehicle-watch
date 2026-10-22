@@ -12,7 +12,7 @@ DeepSeek Harness（DSH）Host 插件 / Cordis bundle：监控**西安** **小米
 - 只保留**西安**、**二手车类目**、匹配关键词的车源，过滤配件/用品/租车/事故残值车；
 - 与已见 `listing_id` 对比：**新上架**、**已跟踪车源降价**；
 - 有新变化才推；企业微信用模板卡片，整卡可点跳**闲鱼商品页**；首次启动只发一条基线摘要；
-- 生成 `二手车监控-最新.xlsx`（6 个 sheet）、CSV，以及 `二手车监控-最新.html`（单文件看板，浏览器打开即可看全量车源/分布/变化/历史）；
+- 生成 `二手车监控-最新.xlsx`（6 个 sheet）、CSV，以及 `二手车监控-最新.html`（只讲**本轮新上架/降价**的简洁看板，电脑/手机浏览器都能看）；
 - 可选企业微信「智能机器人」双向指令（查行情 / 最新 / 找车型 / 扫描）。
 
 > 卖家报价 ≠ 成交价；闲鱼是 C2C 平台，同一台车可能重复挂牌或由车商发布；样本 = 每次搜索前 N 页过滤后的结果。仅个人低频自用，不商用、不公开分发数据。
@@ -66,7 +66,7 @@ pnpm install        # 本地 link 安装不会替你装 ws，必须手动执行�
 ### 方式 C：离线 tarball
 
 ```bash
-pnpm pack           # 生成 dsh-vehicle-watch-0.2.0.tgz
+pnpm pack           # 生成 dsh-vehicle-watch-0.3.0.tgz
 ```
 
 把 `.tgz` 拷到另一台电脑，安装时填 tarball 的绝对路径（同样支持）。
@@ -100,6 +100,10 @@ pnpm pack           # 生成 dsh-vehicle-watch-0.2.0.tgz
         referenceOfficialHigh: 303900
         enabled: true
       # 其余车型照抄 cordis.patch.yml
+    dashboard:
+      enabled: true              # 内置只读 HTTP 看板（手机同一 Wi-Fi 可看）
+      port: 47800
+      host: ''                   # 空 = 0.0.0.0；只在本机看可填 127.0.0.1
     xianyu:
       cookie: ''                 # 可选：填闲鱼网页登录 Cookie（document.cookie 整串）
       pages: 1                   # 每个关键词翻几页（每页 30 条）
@@ -140,6 +144,9 @@ pnpm pack           # 生成 dsh-vehicle-watch-0.2.0.tgz
 | `xianyu.pages` | 1 | 每个关键词翻页数（每页 30 条） |
 | `xianyu.cookie` | `''` | 可选登录 Cookie；触发风控时可提高稳定性 |
 | `report.html` | true | 每次扫描后生成 `二手车监控-最新.html` 看板（不依赖 Python；关掉也不影响推送/Excel） |
+| `dashboard.enabled` | true | 内置只读 HTTP 看板服务（手机同一 Wi-Fi 可访问；只读、无鉴权，别暴露公网） |
+| `dashboard.port` | 47800 | 端口；被占用时自动 +1 重试 |
+| `dashboard.host` | `''` | 空 = 0.0.0.0（局域网可访问）；只在本机看填 `127.0.0.1` |
 | `report.dir` | `''` | 空 = `~/.dsh/storages/vehicle-watch/reports`；可指向工作区 |
 | `report.pythonPath` | `python3` | 换机器一般不用改 |
 
@@ -161,17 +168,25 @@ Cookie 会过期，失效后插件会自动退回匿名搜索；若频繁被风�
 | 报表与明细 | `report.dir`（默认 `~/.dsh/storages/vehicle-watch/reports`） |
 | 产物 | `二手车监控-最新.xlsx`、`二手车监控-最新.html`、`latest.json`、`latest.csv`、`listings-latest.csv`、`scan-log.jsonl` |
 
-### HTML 看板（推荐每天扫一眼）
+### HTML 看板（本轮新上架 / 降价，手机可看）
 
-![看板示例（示例增量）](docs/preview.png)
+![看板示例（含示例增量）](docs/preview.png)
 
-每次扫描后自动重写 `二手车监控-最新.html`，单文件、无外部依赖、双击即可用浏览器打开：
+每次扫描后自动重写 `二手车监控-最新.html`。页面只回答两件事：**本轮有哪些新上架、哪些车降价**；全量车源收在底部「本轮样本明细（可展开）」，默认不铺开。
 
-- 顶部：更新时间、下次预计、本轮样本/新上架/降价/搜索命中；
-- 车型总览 + 本轮变化速览（点击直达对应车型区）；
-- 每个车型：样本/最低/中位/P25–P75/最高/准新占比/参考折价/较上次，价格分布图；
-- 全部车源表（价格/年款/里程/地区/标题/想要数/发布时间），支持搜索、按价格/里程/时间排序、「只看新增/降价」；
-- 扫描历史（最近 12 轮）与口径说明。
+- 顶部：更新时间、下次扫描时间、本轮成功车型数/样本数，以及「新上架 / 降价 / 样本」三个大数字；
+- 「新上架」按车型分组：价格、标题、年款/里程/地区/发布时间，点「看车源」跳闲鱼；
+- 「降价」：原价 → 现价、降幅；
+- 没有变化时直接显示「本轮没有新上架，也没有降价」；
+- 底部一行：各车型样本/最低/中位/准新/较上次，快速看行情。
+
+**手机查看（同一 Wi-Fi）**：插件内置只读 HTTP 服务，默认端口 `47800`。
+
+- 在最方便的地方发 **`看板`**（企微机器人），机器人会直接回复看板链接；
+- 或让 Agent 调 `vehicle_usedcar_status`，返回 `dashboard.url`；
+- 地址形如 `http://192.168.x.x:47800/`；每轮扫描后自动更新，手机下拉刷新即可。
+
+> 只监听局域网、只读、无鉴权：不要暴露到公网；macOS 首次可能弹「允许传入连接」，允许即可。端口被占用会自动 +1 重试。
 
 也可手动重生成（用现有 latest.json）：
 
@@ -203,6 +218,7 @@ node scripts/make_html.mjs <latest.json> [out.html] [intervalHours]
 | `最新` / `新上架` | 本轮新增车源 |
 | `扫描` / `刷新` | 立即抓取一次 |
 | `找宋L` / `找理想L9` | 临时查询闲鱼，并问是否加入监控 |
+| `看板` | 回复本轮变化看板的局域网链接（手机直接点开） |
 | `取消` / `帮助` | 取消加入询问 / 指令列表 |
 
 ---
@@ -223,7 +239,8 @@ node scripts/make_html.mjs <latest.json> [out.html] [intervalHours]
 | 样本数为 0 | 关键词无整车结果/被风控/类目或价格过滤太严；看日志与 `scan-log.jsonl` |
 | 首轮没推送 | 首次只建基线；或 webhook 为空（日志 `notify skipped`） |
 | 报表失败 `No module named openpyxl` | `python3 -m pip install --user openpyxl`，或 `report.enabled: false`（CSV 与 HTML 看板照常生成） |
-| 看板怎么打开 | 直接双击/浏览器打开 `report.dir/二手车监控-最新.html`；每轮扫描后自动覆盖，刷新浏览器即可；只依赖静态文件，无需起服务 |
+| 看板怎么打开 | 电脑：双击/浏览器打开 `report.dir/二手车监控-最新.html`；手机：与 Mac 同一 Wi-Fi，发「看板」拿 `http://<局域网IP>:47800/` 链接 |
+| 手机打不开看板 | 确认同一 Wi-Fi、Mac 防火墙允许传入连接、端口未被占用；地址用局域网 IP（不是 127.0.0.1），日志搜 `dashboard ready` |
 | DSH 关闭后不跑 | 本插件随 DSH Host 生命周期；要 7×24 需另加 launchd / 常驻服务 |
 
 ---
@@ -249,7 +266,7 @@ CI（GitHub Actions，`.github/workflows/ci.yml`）在每次 push / PR 时执行
 cd plugins/dsh-vehicle-watch
 git init -b main
 git add .
-git commit -m "feat: dsh-vehicle-watch v0.2.0"
+git commit -m "feat: dsh-vehicle-watch v0.3.0"
 
 # 有 gh CLI：
 gh repo create dsh-vehicle-watch --public --source=. --push

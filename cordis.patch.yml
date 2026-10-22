@@ -48,6 +48,10 @@
             referenceOfficialLow: 269800
             referenceOfficialHigh: 365000
             enabled: true
+        dashboard:
+          enabled: true
+          port: 47800
+          host: ''
         xianyu:
           cookie: ''
           pages: 1

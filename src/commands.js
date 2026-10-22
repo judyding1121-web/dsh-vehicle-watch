@@ -12,6 +12,7 @@ const HELP = [
   '最新 / 新上架：本轮新增车源',
   '找宋L：先查宋L 的闲鱼行情（关键词“比亚迪宋L”），再问你是否加入监控',
   '扫描 / 刷新：立即抓一次（有新变化推卡片）',
+  '看板：手机上打开「本轮新上架 / 降价」页面',
   '取消：取消当前“是否加入监控”的询问',
   '帮助：显示这条',
 ].join('\n')
@@ -448,6 +449,14 @@ ${question}`, card: null }
     }
 
     if (/帮助|help|菜单|指令/.test(normalized)) return HELP
+
+    if (/看板|网页版|dashboard/.test(normalized)) {
+      const st = await service.status()
+      if (st.dashboard?.url) {
+        return `看板（手机需与 Mac 连同一个 Wi-Fi）：\n${st.dashboard.url}\n每轮扫描后自动更新，手机浏览器刷新即可。`
+      }
+      return '看板服务未启动：检查 dashboard.enabled 是否关闭、端口是否被占用（日志搜 dashboard）。'
+    }
 
     if (/扫描|刷新|抓取|更新/.test(normalized)) {
       service.scan('aibot').then((r) => {

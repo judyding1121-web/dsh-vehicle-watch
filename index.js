@@ -2,6 +2,7 @@
  * DSH Host-only Cordis bundle：闲鱼（西安）二手车新上架/降价监控 + 智能机器人双向指令
  * 定时搜索 → 过滤非车商品 → 与已见 listing 对比 → 企微/飞书推送 → Excel 报表
  */
+import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import z from '@deepseek-ai/schemastery'
@@ -12,6 +13,8 @@ import { createService } from './src/service.js'
 import { AibotClient } from './src/aibot.js'
 import { createCommandHandler } from './src/commands.js'
 import { createLlmAnalyzer } from './src/llm-analyzer.js'
+import { REPORT_NAME } from './src/html-report.js'
+import { dashboardUrls, startDashboardServer } from './src/dashboard-server.js'
 
 export const name = 'vehicle-watch'
 export const inject = ['tools', 'timer']
@@ -49,6 +52,12 @@ export const Config = z.object({
     feishuWebhook: z.string().default(''),
     feishuSecret: z.string().default(''),
     timeoutMs: z.natural().default(10000),
+  }).default({}),
+
+  dashboard: z.object({
+    enabled: z.boolean().default(true),
+    port: z.natural().default(47800),
+    host: z.string().default(''),        // 空 = 0.0.0.0（同一局域网可访问）
   }).default({}),
 
   llm: z.object({
@@ -96,6 +105,29 @@ export function apply(ctx, config) {
 
   const service = createService({ config, statePath, reportDir, reportScriptPath, log })
   const run = (trigger) => service.scan(trigger).catch((err) => log.error('scan failed: %s', err?.stack ?? err))
+
+  // 本地 HTTP 看板：手机同一 Wi-Fi 打开 http://<Mac 局域网 IP>:<port>/ 即可看本轮变化
+  if (config.dashboard?.enabled !== false) {
+    ctx.effect(async () => {
+      try {
+        const started = await startDashboardServer({
+          filePath: path.join(reportDir, REPORT_NAME),
+          jsonPath: path.join(reportDir, 'latest.json'),
+          port: config.dashboard?.port ?? 47800,
+          host: config.dashboard?.host || '0.0.0.0',
+          log,
+        })
+        const urls = dashboardUrls(started.port)
+        service.setDashboard({ enabled: true, port: started.port, url: urls.lan || urls.local, urls })
+        log.info('dashboard ready: %s (phone: %s)', urls.local, urls.lan ?? '无局域网地址')
+        return () => started.close()
+      } catch (err) {
+        log.warn('dashboard server failed: %s', err.message)
+        service.setDashboard({ enabled: false, error: err.message })
+        return () => {}
+      }
+    }, 'vehicle-watch: dashboard')
+  }
 
   // 企业微信「智能机器人」双向通道：接收文本指令并回复（WebSocket 长连接）
   let aibot = null
