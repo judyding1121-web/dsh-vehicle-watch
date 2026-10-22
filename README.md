@@ -66,7 +66,7 @@ pnpm install        # 本地 link 安装不会替你装 ws，必须手动执行�
 ### 方式 C：离线 tarball
 
 ```bash
-pnpm pack           # 生成 dsh-vehicle-watch-0.3.0.tgz
+pnpm pack           # 生成 dsh-vehicle-watch-0.3.2.tgz
 ```
 
 把 `.tgz` 拷到另一台电脑，安装时填 tarball 的绝对路径（同样支持）。
@@ -273,7 +273,7 @@ CI（GitHub Actions，`.github/workflows/ci.yml`）在每次 push / PR 时执行
 cd plugins/dsh-vehicle-watch
 git init -b main
 git add .
-git commit -m "feat: dsh-vehicle-watch v0.3.1"
+git commit -m "feat: dsh-vehicle-watch v0.3.2"
 
 # 有 gh CLI：
 gh repo create dsh-vehicle-watch --public --source=. --push
