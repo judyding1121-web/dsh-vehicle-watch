@@ -10,7 +10,7 @@ const HELP = [
   '【二手车监控 · 指令】',
   '查 / 行情 / 状态：已监控车型的闲鱼样本与中位价',
   '最新 / 新上架：本轮新增车源',
-  '找宋L：先查宋L EV / DM-i 的闲鱼行情，再问你是否加入监控',
+  '找宋L：先查宋L 的闲鱼行情（关键词“比亚迪宋L”），再问你是否加入监控',
   '扫描 / 刷新：立即抓一次（有新变化推卡片）',
   '取消：取消当前“是否加入监控”的询问',
   '帮助：显示这条',
@@ -204,7 +204,7 @@ function targetCard(target, listings, latestTarget) {
     card_type: 'text_notice',
     source: { desc: '闲鱼 · 卖家报价', desc_color: 0 },
     main_title: { title: clip(`${target.name} · 西安行情`, 26), desc: clip(`样本 ${target.sampleCount ?? 0} 台｜中位 ${wan(target.medianPrice)}`, 30) },
-    emphasis_content: { title: clip(wan(lowest), 10), desc: '最低挂牌价' },
+    emphasis_content: { title: clip(wan(lowest), 10), desc: '最低卖家报价' },
     sub_title_text: clip('最低价 3 台见下方按钮；回复“最新”看新增。', 112),
     horizontal_content_list: rows,
     jump_list: jumps,
@@ -246,8 +246,7 @@ function detectConfigured(text, status) {
     { id: 'lixiang-i6', re: /理想i6|i6/ },
     { id: 'aito-m7', re: /问界m7|m7/ },
     { id: 'zeekr-001', re: /极氪001|001/ },
-    { id: 'songl-ev', re: /宋lev|songlev/ },
-    { id: 'songl-dm-i', re: /宋ldm|songldm/ },
+    { id: 'songl', re: /宋l|songl/ },
   ]
   const hit = rules.find((r) => r.re.test(text) && !(r.exclude && r.exclude.test(text)))
   return hit ? status.targets.find((t) => t.id === hit.id) ?? null : null
