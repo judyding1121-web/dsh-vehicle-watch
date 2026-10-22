@@ -5,6 +5,7 @@ import { aggregateListings, createXianyuClient, filterListings, searchUrl } from
 import { loadState, pruneSeen, saveState } from './state.js'
 import { buildMessages, formatWan, Notifier } from './notify.js'
 import { generateReport } from './report.js'
+import { REPORT_NAME, writeHtmlReport } from './html-report.js'
 import { addWatchTargets, clearPending, getPending, loadWatchlist, removeWatchTarget, setPending } from './runtime-store.js'
 
 const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -196,6 +197,21 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
       // 先写扫描日志，再生成报表，保证报表的「扫描日志」sheet 含本次运行
       await appendFile(path.join(reportDir, 'scan-log.jsonl'), JSON.stringify(summary) + '\n', 'utf8')
 
+      // HTML 看板：不依赖 Python，扫描后直接重写（每 2 小时刷新一次）
+      if (config.report?.html !== false) {
+        try {
+          summary.html = await writeHtmlReport({
+            latestPath,
+            scanLogPath: path.join(reportDir, 'scan-log.jsonl'),
+            outPath: path.join(reportDir, REPORT_NAME),
+            intervalHours: config.scanIntervalHours ?? 2,
+          })
+          log.info?.('dashboard written: %s', summary.html)
+        } catch (err) {
+          log.warn?.('dashboard failed: %s', err.message)
+        }
+      }
+
       if (config.report?.enabled !== false) {
         try {
           const report = generateReport({
@@ -238,6 +254,8 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
       source: 'xianyu',
       statePath,
       reportDir,
+      htmlPath: path.join(reportDir, REPORT_NAME),
+      htmlEnabled: config.report?.html !== false,
       webhooks: { wecom: Boolean(config.notify?.wecomWebhook), feishu: Boolean(config.notify?.feishuWebhook) },
       targets: (await loadTargets()).map((t) => {
         const s = state.targets?.[t.id]
@@ -262,13 +280,27 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
 
   async function generateNow() {
     const latestPath = path.join(reportDir, 'latest.json')
+    let html = null
+    if (config.report?.html !== false) {
+      try {
+        html = await writeHtmlReport({
+          latestPath,
+          scanLogPath: path.join(reportDir, 'scan-log.jsonl'),
+          outPath: path.join(reportDir, REPORT_NAME),
+          intervalHours: config.scanIntervalHours ?? 2,
+        })
+      } catch (err) {
+        log.warn?.('dashboard failed: %s', err.message)
+      }
+    }
+    if (config.report?.enabled === false) return { html }
     const report = generateReport({
       pythonPath: config.report?.pythonPath || 'python3',
       scriptPath: reportScriptPath,
       latestPath,
       outDir: reportDir,
     })
-    return report
+    return { ...report, html }
   }
 
   async function readLatest() {

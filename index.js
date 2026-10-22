@@ -81,6 +81,7 @@ export const Config = z.object({
 
   report: z.object({
     enabled: z.boolean().default(true),
+    html: z.boolean().default(true),          // 扫描后生成单文件 HTML 看板
     dir: z.string().default(''),
     pythonPath: z.string().default('python3'),
     keepDays: z.natural().default(30),
@@ -171,7 +172,7 @@ export function apply(ctx, config) {
 
   ctx.tools.register(defineTool({
     name: 'vehicle_usedcar_report',
-    description: '用最近一次扫描结果重新生成 Excel 报表（二手车监控-最新.xlsx），返回文件路径。',
+    description: '用最近一次扫描结果重新生成 Excel 报表与 HTML 看板（二手车监控-最新.xlsx / .html），返回文件路径。',
     parameters: {},
     output: {
       schema: { type: 'json' },

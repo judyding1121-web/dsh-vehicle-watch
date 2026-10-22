@@ -13,6 +13,7 @@
 import assert from 'node:assert/strict'
 
 import { createCommandHandler } from '../src/commands.js'
+import { renderHtmlReport } from '../src/html-report.js'
 import { aggregateListings, filterListings, matchesKeyword, parseXianyuCard, searchUrl } from '../src/xianyu.js'
 import { resolveModels } from '../src/model-resolver.js'
 
@@ -298,6 +299,23 @@ await test('聚合：样本/中位/过滤数正确', async () => {
   assert.equal(agg.pageTotal, 1338)
   assert.equal(agg.cityListings.length, 3)
   assert.equal(agg.url, 'https://www.goofish.com/search?q=' + encodeURIComponent('小米SU7'))
+})
+
+await test('HTML 看板：渲染车型总览/分布/全量车源/扫描历史', async () => {
+  const latest = makeLatest(SU7)
+  latest.targets[0].newListings = latest.targets[0].newListings.slice(0, 1)
+  latest.targets[0].priceDrops = []
+  const html = renderHtmlReport({
+    latest,
+    scanLog: [{ scannedAt: NOW, trigger: 'timer', targets: 1, okTargets: 1, failedTargets: 0, newListings: 1, priceDrops: 0, messages: 1 }],
+    intervalHours: 2,
+  })
+  assert.ok(html.startsWith('<!doctype html>'))
+  for (const kw of ['小米SU7', '车型总览', '本轮变化', '价格分布', '全部车源', '扫描历史', '口径与说明']) {
+    assert.ok(html.includes(kw), `看板应包含「${kw}」`)
+  }
+  assert.ok(html.includes('https://www.goofish.com/item?id='), '看板应包含闲鱼商品链接')
+  assert.ok(!html.includes('>undefined<'), '看板不应出现空字段 undefined')
 })
 
 await test('关键词解析是纯函数：不联网也能解析品牌+车型', async () => {

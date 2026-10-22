@@ -6,13 +6,13 @@
 
 > GitHub: https://github.com/judyding1121-web/dsh-vehicle-watch
 
-DeepSeek Harness（DSH）Host 插件 / Cordis bundle：监控**西安** **小米SU7 / 理想i6 / 问界M7 / 极氪001** 的**闲鱼**二手车，新上架或降价时推送到企业微信、飞书，并生成 Excel 报表。
+DeepSeek Harness（DSH）Host 插件 / Cordis bundle：监控**西安** **小米SU7 / 理想i6 / 问界M7 / 极氪001** 的**闲鱼**二手车，新上架或降价时推送到企业微信、飞书，并生成 **Excel 报表 + 单文件 HTML 看板**。
 
 - 每 2 小时按关键词搜索闲鱼（按发布时间倒序，第 1 页 30 条/关键词，可配多页）；
 - 只保留**西安**、**二手车类目**、匹配关键词的车源，过滤配件/用品/租车/事故残值车；
 - 与已见 `listing_id` 对比：**新上架**、**已跟踪车源降价**；
 - 有新变化才推；企业微信用模板卡片，整卡可点跳**闲鱼商品页**；首次启动只发一条基线摘要；
-- 生成 `二手车监控-最新.xlsx`（6 个 sheet）与 CSV；
+- 生成 `二手车监控-最新.xlsx`（6 个 sheet）、CSV，以及 `二手车监控-最新.html`（单文件看板，浏览器打开即可看全量车源/分布/变化/历史）；
 - 可选企业微信「智能机器人」双向指令（查行情 / 最新 / 找车型 / 扫描）。
 
 > 卖家报价 ≠ 成交价；闲鱼是 C2C 平台，同一台车可能重复挂牌或由车商发布；样本 = 每次搜索前 N 页过滤后的结果。仅个人低频自用，不商用、不公开分发数据。
@@ -66,7 +66,7 @@ pnpm install        # 本地 link 安装不会替你装 ws，必须手动执行�
 ### 方式 C：离线 tarball
 
 ```bash
-pnpm pack           # 生成 dsh-vehicle-watch-0.1.0.tgz
+pnpm pack           # 生成 dsh-vehicle-watch-0.2.0.tgz
 ```
 
 把 `.tgz` 拷到另一台电脑，安装时填 tarball 的绝对路径（同样支持）。
@@ -116,6 +116,7 @@ pnpm pack           # 生成 dsh-vehicle-watch-0.1.0.tgz
       secret: ''
     report:
       enabled: true
+      html: true                 # 每次扫描后生成单文件 HTML 看板
       dir: ''                    # 空 = ~/.dsh/storages/vehicle-watch/reports
       pythonPath: python3        # 换机器一般不用改；Windows 填 python
       keepDays: 30
@@ -138,6 +139,7 @@ pnpm pack           # 生成 dsh-vehicle-watch-0.1.0.tgz
 | `notifyOnFirstRun` | true | 首次只建基线，不逐条推 |
 | `xianyu.pages` | 1 | 每个关键词翻页数（每页 30 条） |
 | `xianyu.cookie` | `''` | 可选登录 Cookie；触发风控时可提高稳定性 |
+| `report.html` | true | 每次扫描后生成 `二手车监控-最新.html` 看板（不依赖 Python；关掉也不影响推送/Excel） |
 | `report.dir` | `''` | 空 = `~/.dsh/storages/vehicle-watch/reports`；可指向工作区 |
 | `report.pythonPath` | `python3` | 换机器一般不用改 |
 
@@ -157,7 +159,25 @@ Cookie 会过期，失效后插件会自动退回匿名搜索；若频繁被风�
 |---|---|
 | 已见车源 / 去重状态 | `~/.dsh/storages/vehicle-watch/used-car-state.json` |
 | 报表与明细 | `report.dir`（默认 `~/.dsh/storages/vehicle-watch/reports`） |
-| 产物 | `二手车监控-最新.xlsx`、`latest.json`、`latest.csv`、`listings-latest.csv`、`scan-log.jsonl` |
+| 产物 | `二手车监控-最新.xlsx`、`二手车监控-最新.html`、`latest.json`、`latest.csv`、`listings-latest.csv`、`scan-log.jsonl` |
+
+### HTML 看板（推荐每天扫一眼）
+
+![看板示例（示例增量）](docs/preview.png)
+
+每次扫描后自动重写 `二手车监控-最新.html`，单文件、无外部依赖、双击即可用浏览器打开：
+
+- 顶部：更新时间、下次预计、本轮样本/新上架/降价/搜索命中；
+- 车型总览 + 本轮变化速览（点击直达对应车型区）；
+- 每个车型：样本/最低/中位/P25–P75/最高/准新占比/参考折价/较上次，价格分布图；
+- 全部车源表（价格/年款/里程/地区/标题/想要数/发布时间），支持搜索、按价格/里程/时间排序、「只看新增/降价」；
+- 扫描历史（最近 12 轮）与口径说明。
+
+也可手动重生成（用现有 latest.json）：
+
+```bash
+node scripts/make_html.mjs <latest.json> [out.html] [intervalHours]
+```
 
 状态与报表都**不在仓库里**，换电脑互不影响；首次运行会重新建立基线。**从瓜子版升级**时，第一次闲鱼扫描会自动按“基线”处理，不会把全量当新上架刷屏。
 
@@ -167,10 +187,10 @@ Cookie 会过期，失效后插件会自动退回匿名搜索；若频繁被风�
 
 | 工具 | 用途 |
 |---|---|
-| `vehicle_usedcar_scan` | 立即搜索一次闲鱼（可指定 `targetId`）；返回新增/降价/消息/报表路径 |
-| `vehicle_usedcar_status` | 上次扫描、各车型样本数/中位价/已见数、闲鱼关键词与搜索链接 |
+| `vehicle_usedcar_scan` | 立即搜索一次闲鱼（可指定 `targetId`）；返回新增/降价/消息/报表与看板路径 |
+| `vehicle_usedcar_status` | 上次扫描、各车型样本数/中位价/已见数、闲鱼关键词与搜索链接、看板路径 |
 | `vehicle_usedcar_bot_status` | 企微智能机器人连接状态、收发计数 |
-| `vehicle_usedcar_report` | 用最近一次结果重新生成 Excel |
+| `vehicle_usedcar_report` | 用最近一次结果重新生成 Excel + HTML 看板 |
 
 ## 企业微信双向指令
 
@@ -202,7 +222,8 @@ Cookie 会过期，失效后插件会自动退回匿名搜索；若频繁被风�
 | 扫描报 `RGV587` / “被挤爆啦” | 触发闲鱼风控：调大 `xianyu.minGapMs`、减少 `pages`、稍后重试；长期需要可在 `xianyu.cookie` 填登录 Cookie |
 | 样本数为 0 | 关键词无整车结果/被风控/类目或价格过滤太严；看日志与 `scan-log.jsonl` |
 | 首轮没推送 | 首次只建基线；或 webhook 为空（日志 `notify skipped`） |
-| 报表失败 `No module named openpyxl` | `python3 -m pip install --user openpyxl`，或 `report.enabled: false`（CSV 照常生成） |
+| 报表失败 `No module named openpyxl` | `python3 -m pip install --user openpyxl`，或 `report.enabled: false`（CSV 与 HTML 看板照常生成） |
+| 看板怎么打开 | 直接双击/浏览器打开 `report.dir/二手车监控-最新.html`；每轮扫描后自动覆盖，刷新浏览器即可；只依赖静态文件，无需起服务 |
 | DSH 关闭后不跑 | 本插件随 DSH Host 生命周期；要 7×24 需另加 launchd / 常驻服务 |
 
 ---
@@ -228,7 +249,7 @@ CI（GitHub Actions，`.github/workflows/ci.yml`）在每次 push / PR 时执行
 cd plugins/dsh-vehicle-watch
 git init -b main
 git add .
-git commit -m "feat: dsh-vehicle-watch v0.1.0"
+git commit -m "feat: dsh-vehicle-watch v0.2.0"
 
 # 有 gh CLI：
 gh repo create dsh-vehicle-watch --public --source=. --push
