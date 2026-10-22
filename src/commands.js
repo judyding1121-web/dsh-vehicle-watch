@@ -456,7 +456,8 @@ ${question}`, card: null }
       if (d?.url) {
         const lines = ['看板（本轮新上架 / 降价，手机可直接看）：', d.url]
         if (d.publicUrl) lines.push('公网临时地址，每轮扫描后自动更新；若失效，重发「看板」获取新地址。')
-        else lines.push('当前是局域网地址：手机需与 Mac 同一 Wi-Fi；公网隧道未启动（日志搜 public tunnel）。')
+        else if (d.publicPending) lines.push('公网隧道启动中（约 10–20 秒），稍后重发「看板」即可拿到公网地址。')
+        else lines.push('当前是局域网地址：手机需与 Mac 同一 Wi-Fi；公网隧道未启动（检查 cloudflared 或 dashboard.public）。')
         lines.push('注意：闲鱼商品页在手机上可能提示“打开闲鱼 App”，点允许即可。')
         return lines.join('\n')
       }

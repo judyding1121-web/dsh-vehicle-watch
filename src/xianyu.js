@@ -246,6 +246,13 @@ export function createXianyuClient({ cookie = '', minGapMs = 3000, timeoutMs = 2
   const jar = new Map([['cna', randomCna()]])
   let lastRequestAt = 0
   let initializing = null
+  // 所有网络请求串行执行：扫描（4 个车型）与机器人临时查询可能并发，避免令牌刷新竞争/瞬时爆发
+  let requestQueue = Promise.resolve()
+  function enqueue(task) {
+    const run = requestQueue.then(task, task)
+    requestQueue = run.then(() => {}, () => {})
+    return run
+  }
 
   for (const [k, v] of parseCookieHeader(cookie)) jar.set(k, v)
   const cookieHeader = () => [...jar].map(([k, v]) => `${k}=${v}`).join('; ')
@@ -270,35 +277,37 @@ export function createXianyuClient({ cookie = '', minGapMs = 3000, timeoutMs = 2
   }
 
   async function mtop(api, data, { spmCnt = 'a21ybx.home.0.0', spmPre = '', token } = {}) {
-    const t = Date.now()
-    const dataStr = JSON.stringify(data)
-    const tk = token ?? h5Token() ?? 'undefined'
-    const params = new URLSearchParams({
-      jsv: '2.7.2', appKey: APPKEY, t: String(t), sign: sign(tk, t, dataStr), v: '1.0',
-      type: 'originaljson', accountSite: 'xianyu', dataType: 'json', timeout: String(timeoutMs),
-      api, sessionOption: 'AutoLoginOnly', spm_cnt: spmCnt,
+    return enqueue(async () => {
+      const t = Date.now()
+      const dataStr = JSON.stringify(data)
+      const tk = token ?? h5Token() ?? 'undefined'
+      const params = new URLSearchParams({
+        jsv: '2.7.2', appKey: APPKEY, t: String(t), sign: sign(tk, t, dataStr), v: '1.0',
+        type: 'originaljson', accountSite: 'xianyu', dataType: 'json', timeout: String(timeoutMs),
+        api, sessionOption: 'AutoLoginOnly', spm_cnt: spmCnt,
+      })
+      if (spmPre) params.set('spm_pre', spmPre)
+      await throttle()
+      const res = await fetch(`${API_BASE}/${api}/1.0/?${params}`, {
+        method: 'POST',
+        headers: {
+          'user-agent': userAgent,
+          'content-type': 'application/x-www-form-urlencoded',
+          accept: 'application/json',
+          referer: HOME_URL,
+          origin: 'https://www.goofish.com',
+          cookie: cookieHeader(),
+        },
+        body: 'data=' + encodeURIComponent(dataStr),
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      storeCookies(res)
+      const text = await res.text()
+      let json
+      try { json = JSON.parse(text) } catch { throw new Error(`闲鱼接口返回非 JSON（HTTP ${res.status}）`) }
+      if (!res.ok) throw new Error(`闲鱼接口 HTTP ${res.status}`)
+      return json
     })
-    if (spmPre) params.set('spm_pre', spmPre)
-    await throttle()
-    const res = await fetch(`${API_BASE}/${api}/1.0/?${params}`, {
-      method: 'POST',
-      headers: {
-        'user-agent': userAgent,
-        'content-type': 'application/x-www-form-urlencoded',
-        accept: 'application/json',
-        referer: HOME_URL,
-        origin: 'https://www.goofish.com',
-        cookie: cookieHeader(),
-      },
-      body: 'data=' + encodeURIComponent(dataStr),
-      signal: AbortSignal.timeout(timeoutMs),
-    })
-    storeCookies(res)
-    const text = await res.text()
-    let json
-    try { json = JSON.parse(text) } catch { throw new Error(`闲鱼接口返回非 JSON（HTTP ${res.status}）`) }
-    if (!res.ok) throw new Error(`闲鱼接口 HTTP ${res.status}`)
-    return json
   }
 
   function retList(result) {
@@ -366,6 +375,7 @@ export function createXianyuClient({ cookie = '', minGapMs = 3000, timeoutMs = 2
       if (tokenProblem || risk) {
         // 令牌过期/风控：重新拿令牌，退避后重试一次
         jar.delete('_m_h5_tk')
+        jar.delete('_m_h5_tk_enc')
         await sleep(risk ? 3000 : 500)
         await ensureToken()
         continue

@@ -8,7 +8,7 @@
  * 插件内置本地 HTTP 服务（src/dashboard-server.js）后，手机同一 Wi-Fi 可直接打开。
  * 手动重生成：node scripts/make_html.mjs <latest.json> [out.html] [intervalHours]
  */
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 const REPORT_NAME = '二手车监控-最新.html'
@@ -52,7 +52,12 @@ function fmtDateTime(iso) {
 }
 
 function fmtClock(date) {
-  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`
+  // 固定按 Asia/Shanghai 显示，避免 Mac 时区不是东八区时「下次扫描」时间错乱
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(date)
+  const got = (type) => parts.find((p) => p.type === type)?.value ?? '00'
+  return `${got('hour')}:${got('minute')}`
 }
 
 function relTime(ms, nowMs) {
@@ -338,7 +343,10 @@ export async function writeHtmlReport({ latestPath, outPath, intervalHours = 2 }
   const latest = JSON.parse(await readFile(latestPath, 'utf8'))
   const html = renderHtmlReport({ latest, intervalHours })
   const target = outPath || path.join(path.dirname(latestPath), REPORT_NAME)
-  await writeFile(target, html, 'utf8')
+  // 原子写：先写临时文件再 rename，避免手机正好在建站过程中打开到半截 HTML
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`
+  await writeFile(tmp, html, 'utf8')
+  await rename(tmp, target)
   return target
 }
 

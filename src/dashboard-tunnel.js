@@ -38,6 +38,13 @@ function isExecutable(file) {
   }
 }
 
+/** 从 cloudflared 日志里提取 quick tunnel 地址（排除 api/www/developers 等固定域名）。 */
+export function extractQuickTunnelUrl(text) {
+  // quick tunnel 域名形如 xxx-yyy-zzz.trycloudflare.com
+  const match = String(text ?? '').match(/https:\/\/(?!api\.|www\.|developers\.)[a-z0-9]+(?:-[a-z0-9]+){2,6}\.trycloudflare\.com/i)
+  return match ? match[0] : null
+}
+
 function spawnOnce(bin, port) {
   return new Promise((resolve, reject) => {
     let child
@@ -52,6 +59,7 @@ function spawnOnce(bin, port) {
     }
     let buffer = ''
     let done = false
+    let exitHook = null
     const timer = setTimeout(() => {
       if (done) return
       done = true
@@ -62,11 +70,15 @@ function spawnOnce(bin, port) {
     const onData = (chunk) => {
       if (done) return
       buffer += chunk.toString()
-      const match = buffer.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i)
-      if (match) {
+      const found = extractQuickTunnelUrl(buffer)
+      if (found) {
         done = true
         clearTimeout(timer)
-        resolve({ child, url: match[0] })
+        resolve({
+          child,
+          url: found,
+          onExit(cb) { exitHook = cb },
+        })
       }
     }
     child.stdout?.on('data', onData)
@@ -78,10 +90,13 @@ function spawnOnce(bin, port) {
       reject(err)
     })
     child.once('exit', (code) => {
-      if (done) return
-      done = true
-      clearTimeout(timer)
-      reject(new Error(`cloudflared 退出（code ${code}）`))
+      if (!done) {
+        done = true
+        clearTimeout(timer)
+        reject(new Error(`cloudflared 退出（code ${code}）`))
+        return
+      }
+      try { exitHook?.(code) } catch { /* ignore */ }
     })
   })
 }
@@ -95,11 +110,12 @@ export async function startQuickTunnel({ port, command = '', log = console } = {
   for (const bin of binaryCandidates(command)) {
     if (bin !== 'cloudflared' && !isExecutable(bin)) continue
     try {
-      const { child, url } = await spawnOnce(bin, port)
+      const { child, url, onExit } = await spawnOnce(bin, port)
       log.info?.('public tunnel ready: %s', url)
       return {
         url,
         bin,
+        onExit,
         close: () => new Promise((resolve) => {
           let settled = false
           const finish = () => { if (!settled) { settled = true; resolve() } }

@@ -36,7 +36,7 @@ export function dashboardUrls(port) {
 
 export async function startDashboardServer({ filePath, jsonPath, port = 47800, host = '0.0.0.0', log = console } = {}) {
   let server
-  let boundPort = Number(port) || 47800
+  let boundPort = Number.isFinite(Number(port)) ? Number(port) : 47800
 
   const handler = async (req, res) => {
     try {
@@ -66,6 +66,9 @@ export async function startDashboardServer({ filePath, jsonPath, port = 47800, h
     let attempts = 0
     const listen = () => {
       server = createServer(handler)
+      server.on('clientError', (_err, socket) => {
+        try { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n') } catch { /* ignore */ }
+      })
       server.once('error', (err) => {
         if (err.code === 'EADDRINUSE' && attempts < 5) {
           attempts += 1
@@ -75,7 +78,10 @@ export async function startDashboardServer({ filePath, jsonPath, port = 47800, h
         }
         reject(err)
       })
-      server.listen(boundPort, host, () => resolve())
+      server.listen(boundPort, host, () => {
+        boundPort = server.address()?.port ?? boundPort
+        resolve()
+      })
     }
     listen()
   })

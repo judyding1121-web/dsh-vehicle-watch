@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { aggregateListings, createXianyuClient, filterListings, searchUrl } from './xianyu.js'
@@ -20,7 +20,7 @@ function localIso(d = new Date()) {
   return s.replace(' ', 'T') + '+08:00'
 }
 
-export function createService({ config, statePath, reportDir, reportScriptPath, log = console }) {
+export function createService({ config, statePath, reportDir, reportScriptPath, log = console, xianyuClient = null }) {
   const notifier = new Notifier({
     wecomWebhook: config.notify?.wecomWebhook ?? '',
     feishuWebhook: config.notify?.feishuWebhook ?? '',
@@ -34,7 +34,7 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
   const excludeKeywords = config.excludeKeywords ?? DEFAULT_EXCLUDES
   const carCategoryId = config.carCategoryId ?? '127302001'
   const pages = Math.max(1, config.xianyu?.pages ?? 1)
-  const xianyu = createXianyuClient({
+  const xianyu = xianyuClient ?? createXianyuClient({
     cookie: config.xianyu?.cookie ?? '',
     minGapMs: config.xianyu?.minGapMs ?? config.fetch?.minGapMs ?? 3000,
     timeoutMs: config.xianyu?.timeoutMs ?? config.fetch?.timeoutMs ?? 20000,
@@ -43,6 +43,13 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
   })
   let running = false
   let dashboard = { enabled: false }
+
+  /** 原子写文件：先写临时文件再 rename，避免看板/接口读到半截内容。 */
+  async function writeAtomic(file, content) {
+    const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
+    await writeFile(tmp, content, 'utf8')
+    await rename(tmp, file)
+  }
 
   function setDashboard(info) {
     dashboard = info ?? { enabled: false }
@@ -182,23 +189,40 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
 
       await mkdir(reportDir, { recursive: true })
       const latestPath = path.join(reportDir, 'latest.json')
-      await writeFile(latestPath, JSON.stringify(latest, null, 2), 'utf8')
-      await writeFile(path.join(reportDir, 'latest.csv'), '\ufeff' + toAggCsv(latestTargets), 'utf8')
-      await writeFile(path.join(reportDir, 'listings-latest.csv'), '\ufeff' + toListingCsv(allListings), 'utf8')
-
+      const okTargets = results.filter((r) => r.status !== 'failed').length
       const summary = {
-        ok: results.some((r) => r.status !== 'failed'),
+        ok: okTargets > 0,
         trigger,
         scannedAt: startedAt,
         targets: results.length,
-        okTargets: results.filter((r) => r.status !== 'failed').length,
-        failedTargets: results.filter((r) => r.status === 'failed').length,
+        okTargets,
+        failedTargets: results.length - okTargets,
         newListings: results.reduce((n, r) => n + r.newListings.length, 0),
         priceDrops: results.reduce((n, r) => n + r.priceDrops.length, 0),
         messages: messages.length,
         notify: notifyResults,
         report: null,
       }
+
+      // 全部车型失败：保留上一份看板/报表，避免一次网络波动把页面清空；同时发一条运维告警
+      if (okTargets === 0) {
+        summary.skippedOutput = true
+        const reasons = results.map((r) => `${r.target.name}：${r.error || '扫描失败'}`).join('\n')
+        summary.alerted = await notifier.send({
+          text: `【闲鱼监控】本轮 ${results.length} 个车型全部扫描失败\n${reasons}\n\n上一份看板/报表保持不变；请检查网络、闲鱼风控或 Cookie 配置。`,
+        })
+        summary.messages += 1
+        await appendFile(path.join(reportDir, 'scan-log.jsonl'), JSON.stringify(summary) + '\n', 'utf8')
+        state.lastRun = summary
+        await saveState(statePath, state)
+        log.warn?.('scan aborted: all %d targets failed, previous report kept', results.length)
+        return summary
+      }
+
+      await writeAtomic(latestPath, JSON.stringify(latest, null, 2))
+      await writeAtomic(path.join(reportDir, 'latest.csv'), '\ufeff' + toAggCsv(latestTargets))
+      await writeAtomic(path.join(reportDir, 'listings-latest.csv'), '\ufeff' + toListingCsv(allListings))
+
       // 先写扫描日志，再生成报表，保证报表的「扫描日志」sheet 含本次运行
       await appendFile(path.join(reportDir, 'scan-log.jsonl'), JSON.stringify(summary) + '\n', 'utf8')
 

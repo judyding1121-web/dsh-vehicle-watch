@@ -66,7 +66,7 @@ pnpm install        # 本地 link 安装不会替你装 ws，必须手动执行�
 ### 方式 C：离线 tarball
 
 ```bash
-pnpm pack           # 生成 dsh-vehicle-watch-0.3.2.tgz
+pnpm pack           # 生成 dsh-vehicle-watch-0.3.3.tgz
 ```
 
 把 `.tgz` 拷到另一台电脑，安装时填 tarball 的绝对路径（同样支持）。
@@ -235,6 +235,19 @@ node scripts/make_html.mjs <latest.json> [out.html] [intervalHours]
 - **升级插件**：可 HMR 的改动即时生效；替换已装包通常提示 `restart-required`，重启即可。
 - **卸载**：插件页移除；状态文件保留在 `~/.dsh/storages/vehicle-watch/`，需要彻底清理时手动删。
 
+## 稳定性设计（针对已知不稳定因素）
+
+| 风险 | 处理 |
+|---|---|
+| 闲鱼风控/令牌过期 | 请求串行化（扫描与机器人查询不会并发轰接口）+ 风控退避 + 刷新 `_m_h5_tk` 重试 |
+| 单轮全部车型失败（网络/风控） | **保留上一份看板/latest.json 不覆盖**，发一条运维告警，避免页面被清空 |
+| 部分车型失败 | 成功车型照常出数据/推送，失败车型在最新数据里标 `failed` |
+| 看板文件正在写时被手机读到半截 | HTML/JSON/CSV 全部原子写（临时文件 + rename） |
+| 公网隧道挂掉 | 自动回退局域网地址，并在后台最多重试 3 次（5–10s 间隔） |
+| 端口被占用 | 看板服务自动 +1 找空闲端口 |
+| Mac 时区不是东八区 | 看板时间固定按 Asia/Shanghai 显示 |
+| DSH 未运行 | 插件不跑；需要 7×24 时加 launchd/常驻兜底（未实现） |
+
 ## 常见问题
 
 | 现象 | 处理 |
@@ -257,8 +270,10 @@ node scripts/make_html.mjs <latest.json> [out.html] [intervalHours]
 ```bash
 pnpm install                  # 只装 ws；@deepseek-ai/* 由 DSH 运行时提供
 pnpm run check                # 所有入口语法检查
-pnpm test                     # 自测：命令处理器 + 闲鱼解析/过滤，全部离线（fixture）
+pnpm test                     # 离线自测：命令/解析/过滤（15）+ 服务/看板/请求队列/隧道解析（7）
 ```
+
+离线测试覆盖：闲鱼卡片解析与过滤、聚合、命令路由、HTML 看板渲染、扫描编排（新增/降价检测、全部失败保留上一份产物、部分失败标记）、看板 HTTP 服务、并发请求串行化。
 
 CI（GitHub Actions，`.github/workflows/ci.yml`）在每次 push / PR 时执行：
 `pnpm install --frozen-lockfile` → `pnpm run check` → `pnpm test` → `pnpm pack` 冒烟。
@@ -273,7 +288,7 @@ CI（GitHub Actions，`.github/workflows/ci.yml`）在每次 push / PR 时执行
 cd plugins/dsh-vehicle-watch
 git init -b main
 git add .
-git commit -m "feat: dsh-vehicle-watch v0.3.2"
+git commit -m "feat: dsh-vehicle-watch v0.3.3"
 
 # 有 gh CLI：
 gh repo create dsh-vehicle-watch --public --source=. --push

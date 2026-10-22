@@ -135,26 +135,49 @@ export function apply(ctx, config) {
         port: started.port,
         url: tunnel?.url || urls.lan || urls.local,
         publicUrl: tunnel?.url ?? null,
+        publicPending: config.dashboard?.public !== false && !tunnel,
         urls: { ...urls, public: tunnel?.url ?? null },
       })
       publish()
       log.info('dashboard ready: %s (phone: %s)', urls.local, urls.lan || urls.local)
 
-      // 公网隧道在后台启动，不阻塞插件激活；成功后再把「看板」链接换成公网地址
-      if (config.dashboard?.public !== false) {
-        startQuickTunnel({ port: started.port, command: config.dashboard?.tunnelCommand || '', log })
-          .then((t) => {
-            if (disposed) { t.close().catch(() => {}); return }
-            tunnel = t
-            urls.public = t.url
+      // 公网隧道在后台启动，不阻塞插件激活；退出时回退到局域网并最多重试 3 次
+      let tunnelAttempts = 0
+      let retryTimer = null
+      const startTunnel = async () => {
+        if (disposed || config.dashboard?.public === false) return
+        try {
+          const t = await startQuickTunnel({ port: started.port, command: config.dashboard?.tunnelCommand || '', log })
+          if (disposed) { t.close().catch(() => {}); return }
+          tunnel = t
+          urls.public = t.url
+          tunnelAttempts = 0
+          publish()
+          log.info('dashboard public: %s', t.url)
+          t.onExit?.((code) => {
+            if (disposed) return
+            log.warn('public tunnel exited (code %s)，5s 后重试', code)
+            tunnel = null
+            urls.public = null
             publish()
-            log.info('dashboard public: %s', t.url)
+            if (tunnelAttempts < 3) {
+              tunnelAttempts += 1
+              retryTimer = setTimeout(startTunnel, 5000)
+            }
           })
-          .catch((err) => log.warn('public tunnel failed: %s（户外手机只能用局域网地址）', err.message))
+        } catch (err) {
+          log.warn('public tunnel failed: %s（户外手机只能用局域网地址）', err.message)
+          if (!disposed && tunnelAttempts < 3) {
+            tunnelAttempts += 1
+            retryTimer = setTimeout(startTunnel, 10000)
+          }
+        }
       }
+      startTunnel()
 
       return () => {
         disposed = true
+        if (retryTimer) clearTimeout(retryTimer)
         if (tunnel) tunnel.close().catch(() => {})
         started.close().catch(() => {})
       }
