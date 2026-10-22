@@ -1,22 +1,16 @@
-import { aggregateListings, fetchGuaziPage, normalizeListing, parseGuaziHtml } from './guazi.js'
 import { resolveModels } from './model-resolver.js'
 
+const GOOFISH_HOME = 'https://www.goofish.com/'
+
 const CATALOG = [
-  {
-    id: 'songl-ev', name: '宋L EV', usedCarUrl: 'https://www.guazi.com/xa/byd/songl/',
-    referenceOfficialLow: 189800, referenceOfficialHigh: 249800,
-  },
-  {
-    id: 'songl-dm-i', name: '宋L DM-i', usedCarUrl: 'https://www.guazi.com/xa/byd/songl_dm-i/',
-    referenceOfficialLow: 139800, referenceOfficialHigh: 156800,
-  },
+  { id: 'songl', name: '宋L', keyword: '比亚迪宋L', referenceOfficialLow: 139800, referenceOfficialHigh: 249800 },
 ]
 
 const HELP = [
   '【二手车监控 · 指令】',
-  '查 / 行情 / 状态：已监控车型的样本与中位价',
+  '查 / 行情 / 状态：已监控车型的闲鱼样本与中位价',
   '最新 / 新上架：本轮新增车源',
-  '找宋L：先查宋L EV / DM-i 的实时行情，再问你是否加入监控',
+  '找宋L：先查宋L EV / DM-i 的闲鱼行情，再问你是否加入监控',
   '扫描 / 刷新：立即抓一次（有新变化推卡片）',
   '取消：取消当前“是否加入监控”的询问',
   '帮助：显示这条',
@@ -28,6 +22,10 @@ function wan(yuan) {
 
 function shortTime(iso) {
   return iso ? String(iso).slice(0, 16).replace('T', ' ') : '—'
+}
+
+function keywordUrl(keyword) {
+  return `https://www.goofish.com/search?q=${encodeURIComponent(keyword)}`
 }
 
 function normalize(text) {
@@ -73,7 +71,7 @@ function lookupCard(items, todo, title = '西安二手车') {
     : `要加入长期监控吗？回复：${todo.map((c, i) => `${i + 1} ${c.name}`).join(' / ')} / ${todo.length + 1} 都不加`
   return {
     card_type: 'text_notice',
-    source: { desc: '瓜子二手车 · 挂牌价', desc_color: 0 },
+    source: { desc: '闲鱼 · 卖家报价', desc_color: 0 },
     main_title: {
       title: clip(multi ? `${title} · 实时行情` : `${items[0].candidate.name} · 实时行情`, 26),
       desc: '临时查询，不加入监控',
@@ -87,23 +85,26 @@ function lookupCard(items, todo, title = '西安二手车') {
 }
 
 function detailCard({ candidate, listing }) {
-  const url = listing.detailUrl || candidate.usedCarUrl
+  const url = listing.detailUrl || candidate?.usedCarUrl || candidate?.url || GOOFISH_HOME
+  const title = listing.title || [listing.modelYear ? `${listing.modelYear}款` : null, listing.trim].filter(Boolean).join(' ')
+  const area = listing.area || '西安'
+  const want = listing.wantCount != null ? `${listing.wantCount}人想要` : null
   return {
     card_type: 'text_notice',
-    source: { desc: '瓜子二手车 · 挂牌价', desc_color: 0 },
+    source: { desc: '闲鱼 · 卖家报价', desc_color: 0 },
     main_title: {
-      title: clip(`${candidate.name} · 最低价`, 26),
-      desc: clip([listing.modelYear ? `${listing.modelYear}款` : null, listing.trim].filter(Boolean).join(' ') || listing.title, 30),
+      title: clip(`${candidate?.name ?? listing.seriesName ?? '闲鱼车源'} · 最低价`, 26),
+      desc: clip(title || candidate?.name || '闲鱼车源', 30),
     },
-    emphasis_content: { title: clip(wan(listing.priceYuan), 10), desc: '挂牌价' },
-    sub_title_text: clip(`${listing.licenseYear ? listing.licenseYear + '年上牌' : '上牌年未知'}｜${listing.mileageKm != null ? (listing.mileageKm / 10000).toFixed(2) + '万km' : '里程未知'}｜西安`, 112),
+    emphasis_content: { title: clip(wan(listing.priceYuan), 10), desc: '卖家报价' },
+    sub_title_text: clip([area, listing.licenseYear ? `${listing.licenseYear}年上牌` : null, want].filter(Boolean).join('｜'), 112),
     horizontal_content_list: [
-      { keyname: '年款', value: listing.modelYear ? `${listing.modelYear}款` : '—' },
+      { keyname: '地区', value: area },
       { keyname: '上牌', value: listing.licenseYear ? `${listing.licenseYear}年` : '—' },
       { keyname: '里程', value: listing.mileageKm != null ? `${(listing.mileageKm / 10000).toFixed(2)}万km` : '—' },
-      { keyname: '已减', value: listing.priceDropYuan ? wan(listing.priceDropYuan) : '—' },
+      { keyname: '想要', value: want ?? '—' },
     ],
-    jump_list: [{ type: 1, title: '查看瓜子详情', url }],
+    jump_list: [{ type: 1, title: '查看闲鱼商品', url }],
     card_action: { type: 1, url },
   }
 }
@@ -176,13 +177,13 @@ function summaryCard(status) {
   const jumps = status.targets.slice(0, 3).filter((t) => t.url).map((t) => ({ type: 1, title: clip(`${t.name} 车源`, 13), url: t.url }))
   return {
     card_type: 'text_notice',
-    source: { desc: '瓜子二手车 · 挂牌价', desc_color: 0 },
+    source: { desc: '闲鱼 · 卖家报价', desc_color: 0 },
     main_title: { title: '西安二手车行情', desc: `${status.targets.length} 个车型｜样本内` },
     emphasis_content: { title: clip(String(status.targets.filter((t) => t.initialized !== false).length), 10), desc: '个在监控' },
     sub_title_text: clip('回复车型名看最低价 3 台，回复“找宋L”查新车系。', 112),
     horizontal_content_list: rows,
     jump_list: jumps,
-    card_action: { type: 1, url: jumps[0]?.url ?? 'https://www.guazi.com/xa/' },
+    card_action: { type: 1, url: jumps[0]?.url ?? 'https://www.goofish.com/' },
   }
 }
 
@@ -201,13 +202,13 @@ function targetCard(target, listings, latestTarget) {
   }))
   return {
     card_type: 'text_notice',
-    source: { desc: '瓜子二手车 · 挂牌价', desc_color: 0 },
+    source: { desc: '闲鱼 · 卖家报价', desc_color: 0 },
     main_title: { title: clip(`${target.name} · 西安行情`, 26), desc: clip(`样本 ${target.sampleCount ?? 0} 台｜中位 ${wan(target.medianPrice)}`, 30) },
     emphasis_content: { title: clip(wan(lowest), 10), desc: '最低挂牌价' },
     sub_title_text: clip('最低价 3 台见下方按钮；回复“最新”看新增。', 112),
     horizontal_content_list: rows,
     jump_list: jumps,
-    card_action: { type: 1, url: jumps[0]?.url ?? target.url ?? 'https://www.guazi.com/xa/' },
+    card_action: { type: 1, url: jumps[0]?.url ?? target.url ?? 'https://www.goofish.com/' },
   }
 }
 
@@ -219,13 +220,13 @@ function latestCard(latestData) {
   const jumps = (latestData.targets ?? []).filter((t) => t.url).slice(0, 3).map((t) => ({ type: 1, title: clip(`${t.seriesName} 车系`, 13), url: t.url }))
   return {
     card_type: 'text_notice',
-    source: { desc: '瓜子二手车 · 挂牌价', desc_color: 0 },
+    source: { desc: '闲鱼 · 卖家报价', desc_color: 0 },
     main_title: { title: '本轮新上架', desc: `${rows.reduce((n, r) => n + parseInt(r.value), 0)} 台` },
     emphasis_content: { title: clip(String(rows.reduce((n, r) => n + parseInt(r.value), 0)), 10), desc: '台' },
     sub_title_text: clip('点击车系查看全部；回复车型名看行情。', 112),
     horizontal_content_list: rows,
     jump_list: jumps,
-    card_action: { type: 1, url: jumps[0]?.url ?? 'https://www.guazi.com/xa/' },
+    card_action: { type: 1, url: jumps[0]?.url ?? 'https://www.goofish.com/' },
   }
 }
 
@@ -234,8 +235,8 @@ function matchCatalog(text) {
   if (!/宋l|songl/.test(text)) return []
   const wantsDm = /dm-?i|dm/.test(text)
   const wantsEv = /ev/.test(text)
-  if (wantsDm && !wantsEv) return CATALOG.filter((c) => c.id.includes('dm'))
-  if (wantsEv && !wantsDm) return CATALOG.filter((c) => c.id.includes('ev'))
+  if (wantsDm && !wantsEv) return CATALOG
+  if (wantsEv && !wantsDm) return CATALOG
   return CATALOG
 }
 
@@ -253,20 +254,6 @@ function detectConfigured(text, status) {
 }
 
 export function createCommandHandler({ service, log = console, analyzer = null }) {
-  async function fetchHtml(url) {
-    const res = await fetch(url, {
-      headers: {
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'accept-language': 'zh-CN,zh;q=0.9',
-        referer: 'https://www.guazi.com/',
-      },
-      signal: AbortSignal.timeout(20000),
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.text()
-  }
-
   async function summary() {
     const status = await service.status()
     const latestData = await service.readLatest()
@@ -339,7 +326,7 @@ export function createCommandHandler({ service, log = console, analyzer = null }
     return { text: lines.join('\n'), card: targetCard(target, listings, lt) }
   }
 
-  async function lookup(candidates, status, title = '西安二手车') {
+  async function lookup(candidates, status, title = '闲鱼二手车') {
     const already = new Set(status.targets.map((t) => t.id))
     const todo = candidates.filter((c) => !already.has(c.id))
     if (!todo.length) {
@@ -350,26 +337,20 @@ export function createCommandHandler({ service, log = console, analyzer = null }
       }
       return lines.join('\n')
     }
-    const lines = ['【西安二手车 · 实时查询】', '说明：临时抓取，结果仅供本次查询。', '']
+    const lines = ['【闲鱼二手车 · 实时查询】', '说明：临时抓取闲鱼搜索结果，结果仅供本次查询。', '']
     const items = []
     for (const c of todo) {
       try {
-        const html = await fetchGuaziPage(c.usedCarUrl)
-        const { init } = parseGuaziHtml(html)
-        const listings = (init.carList ?? []).map(normalizeListing).filter((l) => l.listingId)
-        const agg = aggregateListings({
-          target: { id: c.id, name: c.name, usedCarUrl: c.usedCarUrl },
-          init, listings, html, cityName: '西安',
-          referenceOfficialLow: c.referenceOfficialLow ?? 0,
-        })
-        const cheapest = agg.cityListings
+        const candidate = { ...c, usedCarUrl: keywordUrl(c.keyword) }
+        const { agg, listings } = await service.lookup(c.keyword, { name: c.name })
+        const cheapest = listings
           .filter((l) => l.priceYuan)
           .sort((a, b) => a.priceYuan - b.priceYuan)
           .slice(0, 5)
         lines.push(`【${c.name}】样本 ${agg.sampleCount} 台｜中位 ${wan(agg.price?.median)}｜最低 ${wan(agg.price?.min)}`)
         for (const [i, l] of cheapest.slice(0, 2).entries()) lines.push(listingLine(l, i))
         lines.push('')
-        items.push({ candidate: c, agg, cheapest })
+        items.push({ candidate, agg, cheapest })
       } catch (err) {
         lines.push(`【${c.name}】查询失败：${err.message}`)
       }
@@ -526,7 +507,7 @@ ${question}`, card: null }
       if (!resolved.model) return `已识别品牌「${resolved.brand}」，请补充具体车型，例如“${resolved.brand}L9”。`
       const alternatives = (guess?.alternatives ?? []).map((x) => `${x.brand}${x.model}`)
       const tip = alternatives.length ? `\n你要找的是不是：${alternatives.join(' / ')}？` : ''
-      return `我在瓜子没找到「${resolved.brand}${resolved.model}」。${tip}\n请回复具体“品牌+车型”，例如“理想L9”“蔚来ES8”。`
+      return `我在闲鱼没找到「${resolved.brand}${resolved.model}」。${tip}\n请回复具体“品牌+车型”，例如“理想L9”“蔚来ES8”。`
     }
 
     // 3) 目录兜底（宋L 这类口语简称）

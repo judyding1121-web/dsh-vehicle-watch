@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
-import { aggregateListings, fetchGuaziPage, normalizeListing, parseGuaziHtml } from './guazi.js'
+import { aggregateListings, createXianyuClient, filterListings, searchUrl } from './xianyu.js'
 import { loadState, pruneSeen, saveState } from './state.js'
 import { buildMessages, formatWan, Notifier } from './notify.js'
 import { generateReport } from './report.js'
@@ -9,7 +9,7 @@ import { addWatchTargets, clearPending, getPending, loadWatchlist, removeWatchTa
 
 const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
+const DEFAULT_EXCLUDES = ['租车', '日租', '床垫', '车模', '配件', '订单', '返现', '定金', '事故', '水淹', '残值', '批发']
 
 function localIso(d = new Date()) {
   const s = new Intl.DateTimeFormat('sv-SE', {
@@ -27,41 +27,20 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     timeoutMs: config.notify?.timeoutMs ?? 10000,
     log,
   })
-  const minGapMs = config.fetch?.minGapMs ?? 2500
-  const timeoutMs = config.fetch?.timeoutMs ?? 30000
-  const userAgent = config.fetch?.userAgent || DEFAULT_UA
-  let lastRequestAt = 0
+  const cityName = config.city || config.cityName || '西安'
+  const province = config.province || '陕西'
+  const minPriceYuan = config.minPriceYuan ?? 30000
+  const excludeKeywords = config.excludeKeywords ?? DEFAULT_EXCLUDES
+  const carCategoryId = config.carCategoryId ?? '127302001'
+  const pages = Math.max(1, config.xianyu?.pages ?? 1)
+  const xianyu = createXianyuClient({
+    cookie: config.xianyu?.cookie ?? '',
+    minGapMs: config.xianyu?.minGapMs ?? config.fetch?.minGapMs ?? 3000,
+    timeoutMs: config.xianyu?.timeoutMs ?? config.fetch?.timeoutMs ?? 20000,
+    userAgent: config.fetch?.userAgent || DEFAULT_UA,
+    log,
+  })
   let running = false
-
-  async function throttle() {
-    const gap = minGapMs - (Date.now() - lastRequestAt)
-    if (gap > 0) await sleep(gap)
-    lastRequestAt = Date.now()
-  }
-
-  async function fetchHtml(url, retries = 1) {
-    let lastErr
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        await throttle()
-        const res = await fetch(url, {
-          headers: {
-            'user-agent': userAgent,
-            accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'accept-language': 'zh-CN,zh;q=0.9',
-            referer: 'https://www.guazi.com/',
-          },
-          signal: AbortSignal.timeout(timeoutMs),
-        })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return await res.text()
-      } catch (err) {
-        lastErr = err
-        if (attempt < retries) await sleep(1200 * 2 ** attempt)
-      }
-    }
-    throw new Error(`GET ${url} failed: ${lastErr?.message ?? lastErr}`)
-  }
 
   async function loadTargets() {
     const base = (config.targets ?? []).filter((t) => t.enabled !== false)
@@ -70,7 +49,28 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     for (const t of dynamic) {
       if (t.enabled !== false && !map.has(t.id)) map.set(t.id, t)
     }
-    return [...map.values()]
+    // 兼容旧配置：没有 keyword 的目标用 name 当搜索词
+    return [...map.values()].map((t) => ({ ...t, keyword: t.keyword || t.name }))
+  }
+
+  /** 抓一个 target 的搜索结果（可翻页），返回原始卡片与分页信息。 */
+  async function fetchTargetListings(target) {
+    const collected = []
+    let rawCount = 0
+    let pageInfo = { page: 1, total: null, hasNextPage: null }
+    for (let page = 1; page <= pages; page++) {
+      const res = await xianyu.search(target.keyword, page, { province, city: cityName })
+      rawCount += res.rawCount
+      collected.push(...res.listings)
+      pageInfo = { ...res.pageInfo }
+      if (res.pageInfo.hasNextPage === false) break
+    }
+    const dedup = new Map()
+    for (const listing of collected) if (!dedup.has(listing.listingId)) dedup.set(listing.listingId, listing)
+    const filtered = filterListings([...dedup.values()], {
+      keyword: target.keyword, cityName, minPriceYuan, excludeKeywords, carCategoryId,
+    })
+    return { rawCount, filtered, pageInfo }
   }
 
   async function scan(trigger = 'timer', { targetId = null } = {}) {
@@ -87,24 +87,22 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
       for (const target of targets) {
         const prev = state.targets?.[target.id] ?? null
         try {
-          await throttle()
-          const html = await fetchGuaziPage(target.usedCarUrl, { timeoutMs })
-          const { init } = parseGuaziHtml(html)
-          const listings = (init.carList ?? []).map(normalizeListing).filter((l) => l.listingId)
+          const { rawCount, filtered, pageInfo } = await fetchTargetListings(target)
           const agg = aggregateListings({
             target,
-            init,
-            listings,
-            html,
-            cityName: config.cityName || '西安',
+            listings: filtered,
+            rawCount,
+            pageInfo,
+            cityName,
             referenceOfficialLow: target.referenceOfficialLow ?? 0,
             previous: prev?.last ?? null,
           })
-          if (agg.sampleCount === 0) throw new Error('样本量为 0（页面可能改版/被风控）')
+          if (agg.sampleCount === 0) throw new Error('没有过滤出有效车源（可能触发风控/关键词无结果）')
           if (agg.sampleCount < 10) agg.status = 'partial'
 
-          const firstRun = !prev?.initialized
-          const seen = prev?.seen ?? {}
+          // 换数据源（瓜子 → 闲鱼）后第一次扫描按“基线”处理，避免把全量当新上架刷屏
+          const firstRun = !prev?.initialized || prev?.last?.source !== 'xianyu'
+          const seen = firstRun ? {} : (prev?.seen ?? {})
           const newListings = firstRun ? [] : agg.cityListings.filter((l) => !seen[l.listingId])
           const priceDrops = firstRun ? [] : agg.cityListings
             .filter((l) => seen[l.listingId]?.lastPrice && l.priceYuan != null && seen[l.listingId].lastPrice - l.priceYuan >= (config.priceDropAbs ?? 1000))
@@ -128,7 +126,7 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
             seen: pruneSeen(nextSeen, nowMs, 60),
           }
           results.push({ target, agg, newListings, priceDrops, firstRun, status: agg.status })
-          log.info?.('scan %s: sample=%d new=%d drop=%d', target.name, agg.sampleCount, newListings.length, priceDrops.length)
+          log.info?.('scan %s: raw=%d sample=%d new=%d drop=%d', target.name, rawCount, agg.sampleCount, newListings.length, priceDrops.length)
         } catch (err) {
           const message = err?.message ?? String(err)
           log.warn?.('scan %s failed: %s', target.name, message)
@@ -140,7 +138,8 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
             status: 'failed',
             error: message,
             agg: {
-              targetId: target.id, seriesName: target.name, city: config.cityName || '西安', url: target.usedCarUrl,
+              targetId: target.id, seriesName: target.name, keyword: target.keyword, source: 'xianyu',
+              city: cityName, url: searchUrl(target.keyword),
               status: 'failed', sampleCount: 0, rawCount: 0, outOfCityCount: 0,
               price: {}, mileage: {}, licenseYear: {}, discount: {}, reference: {}, topTags: [], compare: {}, cityListings: [],
             },
@@ -149,7 +148,7 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
       }
 
       const messages = buildMessages(results, {
-        cityName: config.cityName || '西安',
+        cityName,
         maxPush: config.maxPushPerRun ?? 8,
         notifyOnFirstRun: config.notifyOnFirstRun !== false,
       })
@@ -169,7 +168,8 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
       const latest = {
         generatedAt: startedAt,
         trigger,
-        city: config.cityName || '西安',
+        source: 'xianyu',
+        city: cityName,
         targets: latestTargets,
         listings: allListings,
       }
@@ -218,9 +218,24 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     }
   }
 
+  /** 临时查询一个关键词（不写入监控状态），给机器人双向指令用。 */
+  async function lookup(keyword, { name = keyword } = {}) {
+    const res = await xianyu.search(keyword, 1, { province, city: cityName })
+    const listings = filterListings(res.listings, { keyword, cityName, minPriceYuan, excludeKeywords, carCategoryId })
+    const agg = aggregateListings({
+      target: { id: keyword, name, keyword },
+      listings,
+      rawCount: res.rawCount,
+      pageInfo: res.pageInfo,
+      cityName,
+    })
+    return { agg, listings: agg.cityListings, keyword }
+  }
+
   async function status() {
     const state = await loadState(statePath)
     return {
+      source: 'xianyu',
       statePath,
       reportDir,
       webhooks: { wecom: Boolean(config.notify?.wecomWebhook), feishu: Boolean(config.notify?.feishuWebhook) },
@@ -230,7 +245,8 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
         return {
           id: t.id,
           name: t.name,
-          url: t.usedCarUrl,
+          keyword: t.keyword,
+          url: searchUrl(t.keyword),
           enabled: t.enabled !== false,
           initialized: Boolean(s?.initialized),
           lastScanAt: s?.lastScanAt ?? null,
@@ -290,14 +306,14 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     return results
   }
 
-  return { scan, status, generateNow, readLatest, sendCards, loadTargets, addTargets, removeTarget, pending, setPendingEntry, clearPendingEntry }
+  return { scan, lookup, status, generateNow, readLatest, sendCards, loadTargets, addTargets, removeTarget, pending, setPendingEntry, clearPendingEntry }
 }
 
 function toAggCsv(targets) {
   const esc = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`
-  const header = '车型,样本数,外市剔除,页面total,共找到,最低(万),P25(万),中位(万),P75(万),最高(万),中位里程(km),准新车占比,参考折价率,本次新增,本次降价,状态'
+  const header = '车型,关键词,样本数,过滤剔除,结果总数,最低(万),P25(万),中位(万),P75(万),最高(万),中位里程(km),准新车占比,参考折价率,本次新增,本次降价,状态'
   const rows = targets.map((t) => [
-    t.seriesName, t.sampleCount, t.outOfCityCount, t.pageTotal, t.pageFound,
+    t.seriesName, t.keyword, t.sampleCount, t.outOfCityCount, t.pageTotal,
     wan(t.price?.min), wan(t.price?.p25), wan(t.price?.median), wan(t.price?.p75), wan(t.price?.max),
     t.mileage?.medianKm, t.mileage?.nearlyNewRatio,
     t.reference?.discountVsOfficialLow != null ? (t.reference.discountVsOfficialLow * 100).toFixed(2) + '%' : '',
@@ -310,9 +326,9 @@ function wan(v) { return v == null ? '' : (v / 10000).toFixed(2) }
 
 function toListingCsv(listings) {
   const esc = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`
-  const header = '车型,listing_id,标题,年款,配置,上牌年,里程(km),城市,挂牌价(万),累计降幅(万),标签,详情链接'
+  const header = '车型,listing_id,标题,年款,配置,上牌年,里程(km),地区,报价(万),降幅(万),标签,详情链接'
   const rows = listings.map((l) => [
-    l.seriesName, l.listingId, l.title, l.modelYear, l.trim, l.licenseYear, l.mileageKm, l.cityDesc,
+    l.seriesName, l.listingId, l.title, l.modelYear, l.trim, l.licenseYear, l.mileageKm, l.area || l.cityDesc,
     wan(l.priceYuan), wan(l.priceDropYuan), (l.tags ?? []).join('/'), l.detailUrl,
   ].map(esc).join(','))
   return [header, ...rows].join('\n') + '\n'

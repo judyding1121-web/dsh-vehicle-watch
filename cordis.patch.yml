@@ -2,43 +2,68 @@
     - id: vehicle-watch
       name: '@local/dsh-vehicle-watch'
       config:
+        city: 西安
+        province: 陕西
+        minPriceYuan: 30000
         scanIntervalHours: 2
         startupDelaySec: 30
         maxPushPerRun: 8
         notifyOnFirstRun: true
         priceDropAbs: 1000
-        cityCode: xa
-        cityName: 西安
+        excludeKeywords:
+          - 租车
+          - 日租
+          - 床垫
+          - 车模
+          - 配件
+          - 订单
+          - 返现
+          - 定金
+          - 事故
+          - 水淹
+          - 残值
+          - 批发
         targets:
           - id: xiaomi-su7
             name: 小米SU7
-            usedCarUrl: https://www.guazi.com/xa/xiaomiqiche/xiaomisu7/
+            keyword: 小米SU7
             referenceOfficialLow: 219900
             referenceOfficialHigh: 303900
             enabled: true
           - id: lixiang-i6
             name: 理想i6
-            usedCarUrl: https://www.guazi.com/xa/lixiang/lixiangi6/
+            keyword: 理想i6
             referenceOfficialLow: 249800
             referenceOfficialHigh: 269800
             enabled: true
           - id: aito-m7
             name: 问界M7
-            usedCarUrl: https://www.guazi.com/xa/aito/wenjiem7/
+            keyword: 问界M7
             referenceOfficialLow: 279800
             referenceOfficialHigh: 389800
             enabled: true
           - id: zeekr-001
             name: 极氪001
-            usedCarUrl: https://www.guazi.com/xa/jike/jk001/
+            keyword: 极氪001
             referenceOfficialLow: 269800
             referenceOfficialHigh: 365000
             enabled: true
+        xianyu:
+          cookie: ''
+          pages: 1
+          minGapMs: 3000
+          timeoutMs: 20000
         notify:
           wecomWebhook: ''
           feishuWebhook: ''
           feishuSecret: ''
           timeoutMs: 10000
+        aibot:
+          enabled: false
+          botId: ''
+          secret: ''
+          wsUrl: wss://openws.work.weixin.qq.com
+          heartbeatMs: 25000
         report:
           enabled: true
           dir: ''

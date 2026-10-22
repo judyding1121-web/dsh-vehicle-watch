@@ -40,12 +40,13 @@ export async function addWatchTargets(statePath, candidates, configTargets = [])
   const skipped = []
   const now = new Date().toISOString()
   for (const c of candidates) {
-    if (!c?.id || !c?.usedCarUrl) { skipped.push(c); continue }
+    const keyword = c?.keyword || c?.usedCarUrl || ''
+    if (!c?.id || !keyword) { skipped.push(c); continue }
     if (existing.has(c.id)) { skipped.push(c); continue }
     const target = {
       id: c.id,
       name: c.name,
-      usedCarUrl: c.usedCarUrl,
+      keyword,
       referenceOfficialLow: c.referenceOfficialLow ?? 0,
       referenceOfficialHigh: c.referenceOfficialHigh ?? 0,
       enabled: true,

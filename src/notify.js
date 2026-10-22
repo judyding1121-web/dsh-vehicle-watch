@@ -1,5 +1,7 @@
 import { createHmac } from 'node:crypto'
 
+const GOOFISH_HOME = 'https://www.goofish.com/'
+
 export function formatWan(yuan) {
   return yuan == null ? '—' : (yuan / 10000).toFixed(2) + '万'
 }
@@ -18,60 +20,62 @@ function safeUrl(url, fallback) {
   return u.startsWith('http://') || u.startsWith('https://') ? u : fallback
 }
 
-/** 一条新车源/降价车源的卡片（text_notice，整卡可点，跳瓜子详情页）。 */
+/** 一条新车源/降价车源的卡片（text_notice，整卡可点，跳闲鱼商品页）。 */
 function listingCard({ seriesName, kind, listing, cityName, oldPrice = null }) {
   const isDrop = kind === 'drop' && oldPrice != null
-  const detailUrl = safeUrl(listing.detailUrl, 'https://www.guazi.com/xa/')
+  const detailUrl = safeUrl(listing.detailUrl, GOOFISH_HOME)
   const title = isDrop ? `${seriesName} · 降价` : `${seriesName} · 新上架`
   const desc = clip(
-    [listing.modelYear ? `${listing.modelYear}款` : null, listing.trim].filter(Boolean).join(' ') || listing.title || '二手车',
+    [listing.modelYear ? `${listing.modelYear}款` : null, listing.trim].filter(Boolean).join(' ') || listing.title || '闲鱼车源',
     30,
   )
   const price = formatWan(listing.priceYuan)
+  const area = listing.area || cityName
+  const want = listing.wantCount != null ? `${listing.wantCount}人想要` : null
   const sub = isDrop
     ? `原价 ${formatWan(oldPrice)} → 现价 ${price}（↓${formatWan(oldPrice - listing.priceYuan)}）`
-    : `${listing.licenseYear ? listing.licenseYear + '年上牌' : '上牌年未知'}｜${mileageText(listing.mileageKm)}｜${cityName}`
+    : [area, listing.licenseYear ? `${listing.licenseYear}年上牌` : null, want].filter(Boolean).join('｜')
   const rows = isDrop
     ? [
         { keyname: '原价', value: formatWan(oldPrice) },
         { keyname: '现价', value: price },
         { keyname: '降幅', value: '↓' + formatWan(oldPrice - listing.priceYuan) },
-        { keyname: '城市', value: cityName },
+        { keyname: '地区', value: area },
       ]
     : [
-        { keyname: '年款', value: listing.modelYear ? `${listing.modelYear}款` : '—' },
+        { keyname: '地区', value: area },
         { keyname: '上牌', value: listing.licenseYear ? `${listing.licenseYear}年` : '—' },
         { keyname: '里程', value: mileageText(listing.mileageKm) },
-        { keyname: '已减', value: listing.priceDropYuan ? formatWan(listing.priceDropYuan) : '—' },
+        { keyname: '想要', value: want ?? '—' },
       ]
   return {
     card_type: 'text_notice',
-    source: { desc: '瓜子二手车 · 挂牌价', desc_color: 0 },
+    source: { desc: '闲鱼 · 卖家报价', desc_color: 0 },
     main_title: { title: clip(title, 26), desc },
-    emphasis_content: { title: clip(price, 10), desc: isDrop ? '现挂牌价' : '挂牌价' },
+    emphasis_content: { title: clip(price, 10), desc: isDrop ? '现卖家报价' : '卖家报价' },
     sub_title_text: clip(sub, 112),
     horizontal_content_list: rows,
-    jump_list: [{ type: 1, title: '查看瓜子车源', url: detailUrl }],
+    jump_list: [{ type: 1, title: '查看闲鱼商品', url: detailUrl }],
     card_action: { type: 1, url: detailUrl },
   }
 }
 
-/** 首轮基线卡片：点击进入瓜子车系页。 */
+/** 首轮基线卡片：点击进入闲鱼搜索页。 */
 function firstRunCard({ agg, cityName }) {
-  const seriesUrl = safeUrl(agg.url, 'https://www.guazi.com/xa/')
+  const seriesUrl = safeUrl(agg.url, GOOFISH_HOME)
   return {
     card_type: 'text_notice',
-    source: { desc: '瓜子二手车 · 挂牌价', desc_color: 0 },
+    source: { desc: '闲鱼 · 卖家报价', desc_color: 0 },
     main_title: { title: clip(`${agg.seriesName} · 监控已启动`, 26), desc: clip(`${cityName}样本 ${agg.sampleCount} 台`, 30) },
-    emphasis_content: { title: clip(`中位 ${formatWan(agg.price?.median)}`, 10), desc: '挂牌价' },
-    sub_title_text: clip('后续有新上架/降价会推卡片；以下均为样本内统计，点击查看车系页', 112),
+    emphasis_content: { title: clip(`中位 ${formatWan(agg.price?.median)}`, 10), desc: '卖家报价' },
+    sub_title_text: clip('后续有新上架/降价会推卡片；样本为闲鱼搜索结果，点击查看搜索页', 112),
     horizontal_content_list: [
       { keyname: '样本', value: `${agg.sampleCount} 台` },
-      { keyname: '外市', value: `${agg.outOfCityCount} 台` },
-      { keyname: '共找到', value: agg.pageFound != null ? `${agg.pageFound} 台` : '—' },
+      { keyname: '过滤', value: `${agg.outOfCityCount} 台` },
+      { keyname: '结果数', value: agg.pageTotal != null ? `${agg.pageTotal} 条` : '—' },
       { keyname: '准新', value: agg.mileage?.nearlyNewRatio != null ? `${(agg.mileage.nearlyNewRatio * 100).toFixed(0)}%` : '—' },
     ],
-    jump_list: [{ type: 1, title: '查看瓜子车系', url: seriesUrl }],
+    jump_list: [{ type: 1, title: '查看闲鱼搜索', url: seriesUrl }],
     card_action: { type: 1, url: seriesUrl },
   }
 }
@@ -79,11 +83,11 @@ function firstRunCard({ agg, cityName }) {
 function overflowCard({ seriesName, count, seriesUrl }) {
   return {
     card_type: 'text_notice',
-    source: { desc: '瓜子二手车 · 挂牌价', desc_color: 0 },
+    source: { desc: '闲鱼 · 卖家报价', desc_color: 0 },
     main_title: { title: clip(`${seriesName} · 另有 ${count} 台新上架`, 26), desc: '本轮新增车源较多' },
     emphasis_content: { title: clip(String(count), 10), desc: '台' },
-    sub_title_text: '卡片只展示前几条，点击进入车系页看全部',
-    jump_list: [{ type: 1, title: '查看瓜子车系', url: seriesUrl }],
+    sub_title_text: '卡片只展示前几条，点击进入闲鱼搜索看全部',
+    jump_list: [{ type: 1, title: '查看闲鱼搜索', url: seriesUrl }],
     card_action: { type: 1, url: seriesUrl },
   }
 }
@@ -93,14 +97,14 @@ export function buildMessages(results, { cityName = '西安', maxPush = 8, notif
   for (const r of results) {
     if (r.status === 'failed') continue
     const seriesName = r.agg.seriesName
-    const seriesUrl = safeUrl(r.agg.url, 'https://www.guazi.com/xa/')
+    const seriesUrl = safeUrl(r.agg.url, GOOFISH_HOME)
 
     if (r.firstRun) {
       if (!notifyOnFirstRun) continue
       messages.push({
         targetId: r.agg.targetId,
         kind: 'first-run',
-        text: `【${seriesName} · ${cityName}】监控已启动\n当前样本 ${r.agg.sampleCount} 台，中位价 ${formatWan(r.agg.price?.median)}（挂牌价）\n${seriesUrl}`,
+        text: `【${seriesName} · ${cityName}】闲鱼监控已启动\n当前样本 ${r.agg.sampleCount} 台，中位价 ${formatWan(r.agg.price?.median)}（卖家报价）\n${seriesUrl}`,
         card: firstRunCard({ agg: r.agg, cityName }),
       })
       continue
@@ -111,7 +115,7 @@ export function buildMessages(results, { cityName = '西安', maxPush = 8, notif
       messages.push({
         targetId: r.agg.targetId,
         kind: 'new',
-        text: `【${seriesName} · ${cityName}】新上架\n${listing.title}\n${formatWan(listing.priceYuan)}｜${mileageText(listing.mileageKm)}\n${detailUrl}`,
+        text: `【${seriesName} · ${cityName}】新上架\n${listing.title}\n${formatWan(listing.priceYuan)}｜${listing.area || cityName}｜${mileageText(listing.mileageKm)}\n${detailUrl}`,
         card: listingCard({ seriesName, kind: 'new', listing, cityName }),
       })
     }

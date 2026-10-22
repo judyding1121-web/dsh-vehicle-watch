@@ -88,7 +88,7 @@ def main():
     # 1. 二手行情
     ws = wb.active
     ws.title = "二手行情"
-    headers = ["车型", "样本数", "外市剔除", "页面total", "共找到", "最低(万)", "P25(万)", "中位(万)",
+    headers = ["车型", "关键词", "样本数", "过滤剔除", "结果总数", "最低(万)", "P25(万)", "中位(万)",
                "P75(万)", "最高(万)", "中位里程(km)", "准新车占比", "参考折价率", "本次新增", "本次降价", "状态", "扫描时间"]
     rows = []
     for t in targets:
@@ -96,7 +96,7 @@ def main():
         ref = t.get("reference") or {}
         rate = ref.get("discountVsOfficialLow")
         rows.append([
-            t.get("seriesName"), t.get("sampleCount"), t.get("outOfCityCount"), t.get("pageTotal"), t.get("pageFound"),
+            t.get("seriesName"), t.get("keyword"), t.get("sampleCount"), t.get("outOfCityCount"), t.get("pageTotal"),
             wan(p.get("min")), wan(p.get("p25")), wan(p.get("median")), wan(p.get("p75")), wan(p.get("max")),
             (t.get("mileage") or {}).get("medianKm"), (t.get("mileage") or {}).get("nearlyNewRatio"),
             f"{rate * 100:.1f}%" if rate is not None else "—",
@@ -114,19 +114,19 @@ def main():
 
     # 2. 二手车源
     ws2 = wb.create_sheet("二手车源")
-    headers2 = ["车型", "listing_id", "标题", "年款", "配置", "上牌年", "里程(km)", "城市", "挂牌价(万)", "累计降幅(万)", "标签", "详情链接"]
+    headers2 = ["车型", "listing_id", "标题", "年款", "配置", "上牌年", "里程(km)", "地区", "卖家报价(万)", "降幅(万)", "标签", "详情链接"]
     rows2 = []
     for l in listings:
         rows2.append([
             l.get("seriesName"), l.get("listingId"), l.get("title"), l.get("modelYear"), l.get("trim"),
-            l.get("licenseYear"), l.get("mileageKm"), l.get("cityDesc"), wan(l.get("priceYuan")),
+            l.get("licenseYear"), l.get("mileageKm"), l.get("area") or l.get("cityDesc"), wan(l.get("priceYuan")),
             wan(l.get("priceDropYuan")), "、".join(l.get("tags") or []), l.get("detailUrl"),
         ])
     add_table(ws2, headers2, rows2, [12, 22, 40, 8, 34, 8, 10, 8, 11, 12, 18, 44], wrap_cols=(3, 5, 11, 12))
 
     # 3. 最新上架（本次扫描新增）
     ws3 = wb.create_sheet("最新上架")
-    headers3 = ["车型", "标题", "年款", "配置", "上牌年", "里程(km)", "挂牌价(万)", "累计降幅(万)", "标签", "详情链接", "发现时间"]
+    headers3 = ["车型", "标题", "年款", "配置", "上牌年", "里程(km)", "卖家报价(万)", "降幅(万)", "标签", "详情链接", "发现时间"]
     rows3 = []
     for t in targets:
         for l in t.get("newListings") or []:
@@ -167,16 +167,17 @@ def main():
 
     # 6. 说明
     ws6 = wb.create_sheet("说明")
-    ws6["A1"] = f"二手车监控 · {city} · 瓜子二手车"
+    ws6["A1"] = f"闲鱼二手车监控 · {city} · 卖家报价"
     ws6["A1"].font = TITLE_FONT
     notes = [
-        "监控车型：小米SU7 / 理想i6 / 问界M7（西安）。",
-        "数据来源：瓜子二手车车系页（第 1 页，40 条/车型），匿名低频抓取，每 2 小时一次。",
-        "口径：挂牌价，不是成交价；只统计西安车源；每页 40 条是样本，所有指标为「样本内」。",
+        "监控车型：小米SU7 / 理想i6 / 问界M7 / 极氪001（西安）。",
+        "数据来源：闲鱼 PC 搜索（www.goofish.com），按关键词 + 西安地区过滤，匿名低频抓取，每 2 小时一次。",
+        "口径：卖家挂牌报价，不是成交价；样本 = 每次搜索前 N 页、过滤非车商品后的车源，所有指标为「样本内」。",
+        "过滤规则：价格低于下限、标题匹配不到车型、命中排除词（租车/床垫/事故/残值/批发等）的剔除，数量见「过滤剔除」。",
         "新增/降价：与上一次扫描的 listing_id 集合/价格对比；首次扫描只建基线，不逐条推送。",
-        "参考折价率 = 1 − 样本中位挂牌价 ÷ 懂车帝新车指导价下限；未做年款/配置匹配，仅看趋势。",
-        "页面 total 与「共找到」是两套口径（约 2.25 倍差异），本表分列展示。",
-        "合规：仅个人自用、低频、不公开分发、不商用；详情请回源到瓜子页面。",
+        "参考折价率 = 1 − 样本中位报价 ÷ 新车指导价下限；未做年款/配置匹配，仅看趋势。",
+        "闲鱼是 C2C 平台，同一台车可能重复挂牌或由车商发布；报价可议价，请回源到闲鱼商品页核实。",
+        "合规：仅个人自用、低频、不公开分发、不商用；详情请回源到闲鱼商品页。",
     ]
     for i, note in enumerate(notes, start=3):
         ws6[f"A{i}"] = note

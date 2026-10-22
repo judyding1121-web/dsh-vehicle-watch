@@ -1,6 +1,6 @@
 /**
- * DSH Host-only Cordis bundle：瓜子二手车（西安四车型）新上架/降价监控 + 智能机器人双向指令
- * 定时抓取 → 与已见 listing 对比 → 企微/飞书推送 → Excel 报表
+ * DSH Host-only Cordis bundle：闲鱼（西安）二手车新上架/降价监控 + 智能机器人双向指令
+ * 定时搜索 → 过滤非车商品 → 与已见 listing 对比 → 企微/飞书推送 → Excel 报表
  */
 import { fileURLToPath } from 'node:url'
 
@@ -19,15 +19,23 @@ export const inject = ['tools', 'timer']
 const Target = z.object({
   id: z.string().required(),
   name: z.string().required(),
-  usedCarUrl: z.string().required(),
+  keyword: z.string().default(''),       // 闲鱼搜索关键词；旧配置缺失时回退用 name
+  usedCarUrl: z.string().default(''),    // 历史字段（瓜子版），保留以兼容旧配置
   referenceOfficialLow: z.natural().default(0),
   referenceOfficialHigh: z.natural().default(0),
   enabled: z.boolean().default(true),
 })
 
 export const Config = z.object({
-  cityCode: z.string().default('xa'),
-  cityName: z.string().default('西安'),
+  city: z.string().default('西安'),
+  province: z.string().default('陕西'),
+  cityCode: z.string().default('xa'),        // 历史字段，保留兼容
+  cityName: z.string().default('西安'),      // 历史字段，保留兼容
+  minPriceYuan: z.natural().default(30000),  // 低于此价视为配件/租车/残值车，过滤掉
+  carCategoryId: z.string().default('127302001'), // 闲鱼“二手车”类目 id
+  excludeKeywords: z.array(z.string()).default([
+    '租车', '日租', '床垫', '车模', '配件', '订单', '返现', '定金', '事故', '水淹', '残值', '批发',
+  ]),
   scanIntervalHours: z.natural().default(2),
   startupDelaySec: z.natural().default(30),
   maxPushPerRun: z.natural().default(8),
@@ -58,9 +66,16 @@ export const Config = z.object({
     heartbeatMs: z.natural().default(25000),
   }).default({}),
 
+  xianyu: z.object({
+    cookie: z.string().default(''),          // 可选：登录 Cookie，匿名也能搜，填了更稳
+    pages: z.natural().default(1),           // 每个关键词翻几页（每页 30 条）
+    minGapMs: z.natural().default(3000),     // 请求间隔，太低容易触发风控
+    timeoutMs: z.natural().default(20000),
+  }).default({}),
+
   fetch: z.object({
-    minGapMs: z.natural().default(2500),
-    timeoutMs: z.natural().default(30000),
+    minGapMs: z.natural().default(3000),
+    timeoutMs: z.natural().default(20000),
     userAgent: z.string().default(''),
   }).default({}),
 
@@ -112,7 +127,7 @@ export function apply(ctx, config) {
 
   ctx.tools.register(defineTool({
     name: 'vehicle_usedcar_scan',
-    description: '立即扫描一次瓜子二手车（西安四车型），返回本次新上架/降价数量与各车型样本行情。',
+    description: '立即搜索一次闲鱼（西安四车型），返回本次新上架/降价数量与各车型样本行情。',
     parameters: {
       targetId: { type: 'string', description: '只扫某个车型（可选：xiaomi-su7 / lixiang-i6 / aito-m7）' },
     },
@@ -129,7 +144,7 @@ export function apply(ctx, config) {
 
   ctx.tools.register(defineTool({
     name: 'vehicle_usedcar_status',
-    description: '查看二手车监控状态：各车型上次扫描时间、西安样本数、中位价、已见车源数、上次运行结果、智能机器人连接状态。',
+    description: '查看闲鱼二手车监控状态：各车型上次扫描时间、西安样本数、中位价、已见车源数、上次运行结果、智能机器人连接状态。',
     parameters: {},
     output: {
       schema: { type: 'json' },
@@ -168,5 +183,5 @@ export function apply(ctx, config) {
     },
   }))
 
-  log.info('vehicle-watch mounted: targets=%d interval=%dh reportDir=%s aibot=%s', config.targets.length, config.scanIntervalHours, reportDir, config.aibot?.enabled ? 'on' : 'off')
+  log.info('vehicle-watch mounted: source=xianyu targets=%d interval=%dh reportDir=%s aibot=%s', config.targets.length, config.scanIntervalHours, reportDir, config.aibot?.enabled ? 'on' : 'off')
 }
