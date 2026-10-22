@@ -16,10 +16,15 @@ function binaryCandidates(custom) {
   return [
     custom,
     process.env.CLOUDFLARED_PATH,
-    path.join(home, '.npm-global/bin/cloudflared'),
+    // 优先用 npm 包里的原生二进制：它不依赖 PATH 里的 node（Electron 主进程的 PATH 通常没有 node）
+    path.join(home, '.npm-global/lib/node_modules/cloudflared/bin/cloudflared'),
+    '/opt/homebrew/lib/node_modules/cloudflared/bin/cloudflared',
+    '/usr/local/lib/node_modules/cloudflared/bin/cloudflared',
     '/opt/homebrew/bin/cloudflared',
     '/usr/local/bin/cloudflared',
     '/usr/bin/cloudflared',
+    // 最后才是 PATH 里的 wrapper（npm 全局 bin 是 #!/usr/bin/env node 脚本）
+    path.join(home, '.npm-global/bin/cloudflared'),
     'cloudflared',
   ].filter(Boolean)
 }
@@ -108,7 +113,8 @@ export async function startQuickTunnel({ port, command = '', log = console } = {
       }
     } catch (err) {
       lastError = err
-      if (err.code !== 'ENOENT') break
+      log.warn?.('cloudflared candidate failed (%s): %s', bin, err.message)
+      // 继续尝试下一个候选（例如 npm wrapper 依赖 node，失败后改用原生二进制）
     }
   }
   throw lastError ?? new Error('未找到 cloudflared（可 brew install cloudflared，或在 dashboard.tunnelCommand 指定路径）')
