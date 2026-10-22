@@ -452,8 +452,13 @@ ${question}`, card: null }
 
     if (/看板|网页版|dashboard/.test(normalized)) {
       const st = await service.status()
-      if (st.dashboard?.url) {
-        return `看板（手机需与 Mac 连同一个 Wi-Fi）：\n${st.dashboard.url}\n每轮扫描后自动更新，手机浏览器刷新即可。`
+      const d = st.dashboard
+      if (d?.url) {
+        const lines = ['看板（本轮新上架 / 降价，手机可直接看）：', d.url]
+        if (d.publicUrl) lines.push('公网临时地址，每轮扫描后自动更新；若失效，重发「看板」获取新地址。')
+        else lines.push('当前是局域网地址：手机需与 Mac 同一 Wi-Fi；公网隧道未启动（日志搜 public tunnel）。')
+        lines.push('注意：闲鱼商品页在手机上可能提示“打开闲鱼 App”，点允许即可。')
+        return lines.join('\n')
       }
       return '看板服务未启动：检查 dashboard.enabled 是否关闭、端口是否被占用（日志搜 dashboard）。'
     }

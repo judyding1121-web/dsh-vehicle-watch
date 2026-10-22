@@ -1,0 +1,115 @@
+/**
+ * Cloudflare 快速隧道：把本地看板临时映射到一个公网 HTTPS 地址，
+ * 让手机在户外（不在同一 Wi-Fi）也能打开「本轮新上架/降价」页面。
+ *
+ * - 使用 cloudflared 的免账号 quick tunnel（URL 形如 https://xxx.trycloudflare.com）；
+ * - 地址随机、只读、无鉴权：不要转发给无关的人；Cloudflare 不保证长期可用；
+ * - 找不到 cloudflared / 启动失败时返回 null，插件自动退回局域网地址。
+ */
+import { spawn } from 'node:child_process'
+import { accessSync, constants } from 'node:fs'
+import { homedir } from 'node:os'
+import path from 'node:path'
+
+function binaryCandidates(custom) {
+  const home = homedir()
+  return [
+    custom,
+    process.env.CLOUDFLARED_PATH,
+    path.join(home, '.npm-global/bin/cloudflared'),
+    '/opt/homebrew/bin/cloudflared',
+    '/usr/local/bin/cloudflared',
+    '/usr/bin/cloudflared',
+    'cloudflared',
+  ].filter(Boolean)
+}
+
+function isExecutable(file) {
+  try {
+    accessSync(file, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function spawnOnce(bin, port) {
+  return new Promise((resolve, reject) => {
+    let child
+    try {
+      child = spawn(bin, ['tunnel', '--url', `http://127.0.0.1:${port}`, '--no-autoupdate'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, NO_COLOR: '1' },
+      })
+    } catch (err) {
+      reject(err)
+      return
+    }
+    let buffer = ''
+    let done = false
+    const timer = setTimeout(() => {
+      if (done) return
+      done = true
+      child.kill('SIGTERM')
+      reject(new Error('cloudflared 启动超时（60s 内未拿到公网地址）'))
+    }, 60_000)
+
+    const onData = (chunk) => {
+      if (done) return
+      buffer += chunk.toString()
+      const match = buffer.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i)
+      if (match) {
+        done = true
+        clearTimeout(timer)
+        resolve({ child, url: match[0] })
+      }
+    }
+    child.stdout?.on('data', onData)
+    child.stderr?.on('data', onData)
+    child.once('error', (err) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      reject(err)
+    })
+    child.once('exit', (code) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      reject(new Error(`cloudflared 退出（code ${code}）`))
+    })
+  })
+}
+
+/**
+ * 启动 quick tunnel；返回 { url, close }。
+ * @param {{ port:number, command?:string, log?:object }} options
+ */
+export async function startQuickTunnel({ port, command = '', log = console } = {}) {
+  let lastError = null
+  for (const bin of binaryCandidates(command)) {
+    if (bin !== 'cloudflared' && !isExecutable(bin)) continue
+    try {
+      const { child, url } = await spawnOnce(bin, port)
+      log.info?.('public tunnel ready: %s', url)
+      return {
+        url,
+        bin,
+        close: () => new Promise((resolve) => {
+          let settled = false
+          const finish = () => { if (!settled) { settled = true; resolve() } }
+          child.once('exit', finish)
+          try { child.kill('SIGTERM') } catch { /* ignore */ }
+          setTimeout(() => {
+            try { child.kill('SIGKILL') } catch { /* ignore */ }
+            finish()
+          }, 3000)
+        }),
+      }
+    } catch (err) {
+      lastError = err
+      if (err.code !== 'ENOENT') break
+    }
+  }
+  throw lastError ?? new Error('未找到 cloudflared（可 brew install cloudflared，或在 dashboard.tunnelCommand 指定路径）')
+}

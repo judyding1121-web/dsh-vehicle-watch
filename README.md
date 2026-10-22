@@ -101,7 +101,9 @@ pnpm pack           # 生成 dsh-vehicle-watch-0.3.0.tgz
         enabled: true
       # 其余车型照抄 cordis.patch.yml
     dashboard:
-      enabled: true              # 内置只读 HTTP 看板（手机同一 Wi-Fi 可看）
+      enabled: true              # 内置只读 HTTP 看板
+      public: true               # 用 cloudflared 快速隧道映射成公网地址（户外手机可看）
+      tunnelCommand: ''          # cloudflared 路径；空 = 自动查找
       port: 47800
       host: ''                   # 空 = 0.0.0.0；只在本机看可填 127.0.0.1
     xianyu:
@@ -144,7 +146,9 @@ pnpm pack           # 生成 dsh-vehicle-watch-0.3.0.tgz
 | `xianyu.pages` | 1 | 每个关键词翻页数（每页 30 条） |
 | `xianyu.cookie` | `''` | 可选登录 Cookie；触发风控时可提高稳定性 |
 | `report.html` | true | 每次扫描后生成 `二手车监控-最新.html` 看板（不依赖 Python；关掉也不影响推送/Excel） |
-| `dashboard.enabled` | true | 内置只读 HTTP 看板服务（手机同一 Wi-Fi 可访问；只读、无鉴权，别暴露公网） |
+| `dashboard.enabled` | true | 内置只读 HTTP 看板服务（手机可访问：公网隧道/局域网） |
+| `dashboard.public` | true | 启动 Cloudflare quick tunnel（需本机有 `cloudflared`），户外手机可看；失败自动退回局域网 |
+| `dashboard.tunnelCommand` | `''` | cloudflared 路径；空 = 自动查找（`~/.npm-global/bin`、Homebrew 等） |
 | `dashboard.port` | 47800 | 端口；被占用时自动 +1 重试 |
 | `dashboard.host` | `''` | 空 = 0.0.0.0（局域网可访问）；只在本机看填 `127.0.0.1` |
 | `report.dir` | `''` | 空 = `~/.dsh/storages/vehicle-watch/reports`；可指向工作区 |
@@ -180,13 +184,15 @@ Cookie 会过期，失效后插件会自动退回匿名搜索；若频繁被风�
 - 没有变化时直接显示「本轮没有新上架，也没有降价」；
 - 底部一行：各车型样本/最低/中位/准新/较上次，快速看行情。
 
-**手机查看（同一 Wi-Fi）**：插件内置只读 HTTP 服务，默认端口 `47800`。
+**手机查看（户外也行）**：插件启动本地只读看板服务（默认 `47800`），并尝试用 **Cloudflare quick tunnel** 映射成公网 HTTPS 地址（需要本机有 `cloudflared`，无需 Cloudflare 账号）。
 
-- 在最方便的地方发 **`看板`**（企微机器人），机器人会直接回复看板链接；
-- 或让 Agent 调 `vehicle_usedcar_status`，返回 `dashboard.url`；
-- 地址形如 `http://192.168.x.x:47800/`；每轮扫描后自动更新，手机下拉刷新即可。
+- 企微机器人发 **`看板`** → 回复形如 `https://xxx.trycloudflare.com` 的公网地址，户外手机直接打开；
+- 公网隧道不可用时，自动退回局域网地址 `http://<局域网IP>:47800/`（需同一 Wi-Fi）；
+- 地址随机、只读、无鉴权，插件重启后会变；不要转发给无关的人；
+- 每轮扫描后页面自动更新，手机刷新即可；
+- 看板里「看车源」打开的是闲鱼商品页；闲鱼对浏览器有反爬/登录限制，手机通常提示“打开闲鱼 App”，允许即可（item id 与闲鱼详情 API 已核对一致）。
 
-> 只监听局域网、只读、无鉴权：不要暴露到公网；macOS 首次可能弹「允许传入连接」，允许即可。端口被占用会自动 +1 重试。
+> 看板只读、无鉴权：公网地址是 Cloudflare 随机临时链接，别转发给无关的人；局域网地址仅同一 Wi-Fi 可访问。macOS 首次可能弹「允许传入连接」，允许即可。
 
 也可手动重生成（用现有 latest.json）：
 
@@ -240,7 +246,8 @@ node scripts/make_html.mjs <latest.json> [out.html] [intervalHours]
 | 首轮没推送 | 首次只建基线；或 webhook 为空（日志 `notify skipped`） |
 | 报表失败 `No module named openpyxl` | `python3 -m pip install --user openpyxl`，或 `report.enabled: false`（CSV 与 HTML 看板照常生成） |
 | 看板怎么打开 | 电脑：双击/浏览器打开 `report.dir/二手车监控-最新.html`；手机：与 Mac 同一 Wi-Fi，发「看板」拿 `http://<局域网IP>:47800/` 链接 |
-| 手机打不开看板 | 确认同一 Wi-Fi、Mac 防火墙允许传入连接、端口未被占用；地址用局域网 IP（不是 127.0.0.1），日志搜 `dashboard ready` |
+| 手机打不开看板 | 优先用「看板」返回的 `https://*.trycloudflare.com` 公网地址（户外可用）；若退回局域网，检查同一 Wi-Fi/防火墙/端口；日志搜 `dashboard ready` / `public tunnel` |
+| 公网隧道没启动 | 确认本机装了 `cloudflared`（`cloudflared --version`），或 `dashboard.tunnelCommand` 指向路径；隧道是临时地址、不保证长期可用 |
 | DSH 关闭后不跑 | 本插件随 DSH Host 生命周期；要 7×24 需另加 launchd / 常驻服务 |
 
 ---
@@ -266,7 +273,7 @@ CI（GitHub Actions，`.github/workflows/ci.yml`）在每次 push / PR 时执行
 cd plugins/dsh-vehicle-watch
 git init -b main
 git add .
-git commit -m "feat: dsh-vehicle-watch v0.3.0"
+git commit -m "feat: dsh-vehicle-watch v0.3.1"
 
 # 有 gh CLI：
 gh repo create dsh-vehicle-watch --public --source=. --push

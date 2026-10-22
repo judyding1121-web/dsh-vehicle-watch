@@ -15,6 +15,7 @@ import { createCommandHandler } from './src/commands.js'
 import { createLlmAnalyzer } from './src/llm-analyzer.js'
 import { REPORT_NAME } from './src/html-report.js'
 import { dashboardUrls, startDashboardServer } from './src/dashboard-server.js'
+import { startQuickTunnel } from './src/dashboard-tunnel.js'
 
 export const name = 'vehicle-watch'
 export const inject = ['tools', 'timer']
@@ -56,6 +57,8 @@ export const Config = z.object({
 
   dashboard: z.object({
     enabled: z.boolean().default(true),
+    public: z.boolean().default(true),   // 启动 Cloudflare 快速隧道，户外手机可看
+    tunnelCommand: z.string().default(''), // cloudflared 路径；空 = 自动查找
     port: z.natural().default(47800),
     host: z.string().default(''),        // 空 = 0.0.0.0（同一局域网可访问）
   }).default({}),
@@ -106,25 +109,54 @@ export function apply(ctx, config) {
   const service = createService({ config, statePath, reportDir, reportScriptPath, log })
   const run = (trigger) => service.scan(trigger).catch((err) => log.error('scan failed: %s', err?.stack ?? err))
 
-  // 本地 HTTP 看板：手机同一 Wi-Fi 打开 http://<Mac 局域网 IP>:<port>/ 即可看本轮变化
+  // 本地/公网看板：手机可直接看「本轮新上架/降价」
   if (config.dashboard?.enabled !== false) {
     ctx.effect(async () => {
+      let started
       try {
-        const started = await startDashboardServer({
+        started = await startDashboardServer({
           filePath: path.join(reportDir, REPORT_NAME),
           jsonPath: path.join(reportDir, 'latest.json'),
           port: config.dashboard?.port ?? 47800,
           host: config.dashboard?.host || '0.0.0.0',
           log,
         })
-        const urls = dashboardUrls(started.port)
-        service.setDashboard({ enabled: true, port: started.port, url: urls.lan || urls.local, urls })
-        log.info('dashboard ready: %s (phone: %s)', urls.local, urls.lan ?? '无局域网地址')
-        return () => started.close()
       } catch (err) {
         log.warn('dashboard server failed: %s', err.message)
         service.setDashboard({ enabled: false, error: err.message })
         return () => {}
+      }
+
+      const urls = dashboardUrls(started.port)
+      let tunnel = null
+      let disposed = false
+      const publish = () => service.setDashboard({
+        enabled: true,
+        port: started.port,
+        url: tunnel?.url || urls.lan || urls.local,
+        publicUrl: tunnel?.url ?? null,
+        urls: { ...urls, public: tunnel?.url ?? null },
+      })
+      publish()
+      log.info('dashboard ready: %s (phone: %s)', urls.local, urls.lan || urls.local)
+
+      // 公网隧道在后台启动，不阻塞插件激活；成功后再把「看板」链接换成公网地址
+      if (config.dashboard?.public !== false) {
+        startQuickTunnel({ port: started.port, command: config.dashboard?.tunnelCommand || '', log })
+          .then((t) => {
+            if (disposed) { t.close().catch(() => {}); return }
+            tunnel = t
+            urls.public = t.url
+            publish()
+            log.info('dashboard public: %s', t.url)
+          })
+          .catch((err) => log.warn('public tunnel failed: %s（户外手机只能用局域网地址）', err.message))
+      }
+
+      return () => {
+        disposed = true
+        if (tunnel) tunnel.close().catch(() => {})
+        started.close().catch(() => {})
       }
     }, 'vehicle-watch: dashboard')
   }

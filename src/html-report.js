@@ -312,7 +312,7 @@ export function renderHtmlReport({ latest, intervalHours = 2, title = '西安二
     emptyState(hasChanges, baseline),
     `<section class="card"><h3>各车型行情（本轮样本）</h3>${statsTable(targets)}</section>`,
     sampleDetails(targets, now),
-    `<div class="foot">口径：闲鱼卖家报价，非成交价；同一台车可能重复挂牌。样本为搜索前 N 页过滤后的结果，不代表全站；新增/降价与上一轮扫描对比。看板仅供个人参考。</div>`,
+    `<div class="foot">口径：闲鱼卖家报价，非成交价；同一台车可能重复挂牌。样本为搜索前 N 页过滤后的结果，不代表全站；新增/降价与上一轮扫描对比。点「看车源」打开闲鱼商品页；手机若提示“打开闲鱼 App”，允许即可。看板仅供个人参考。</div>`,
   ].filter(Boolean).join('\n')
 
   return `<!doctype html>
