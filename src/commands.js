@@ -339,6 +339,7 @@ export function createCommandHandler({ service, log = console, analyzer = null }
     }
     const lines = ['【闲鱼二手车 · 实时查询】', '说明：临时抓取闲鱼搜索结果，结果仅供本次查询。', '']
     const items = []
+    let failed = 0
     for (const c of todo) {
       try {
         const candidate = { ...c, usedCarUrl: keywordUrl(c.keyword) }
@@ -352,9 +353,25 @@ export function createCommandHandler({ service, log = console, analyzer = null }
         lines.push('')
         items.push({ candidate, agg, cheapest })
       } catch (err) {
+        failed += 1
         lines.push(`【${c.name}】查询失败：${err.message}`)
       }
     }
+
+    // 完全没结果：直接说清楚，不要让用户“加入监控”一个搜不到车的关键词
+    if (!items.length) {
+      return {
+        text: `${lines.join('\n')}\n\n${failed ? '查询失败，请稍后再试或检查网络。' : '没搜到车源。'}`,
+        card: null,
+        noResults: true,
+      }
+    }
+    if (items.every((x) => (x.agg.sampleCount ?? 0) === 0)) {
+      const names = todo.map((c) => c.name).join(' / ')
+      const text = `${lines.join('\n')}\n没搜到「${names}」的西安在售车源。可能是关键词太具体或闲鱼暂无在售，换个更短的关键词（例如只发车型名）再试试。`
+      return { text, card: null, noResults: true }
+    }
+
     lines.push(todo.length === 1
       ? '要加入长期监控吗？回复：1 加入 / 2 不加入'
       : `要加入长期监控吗？回复：${todo.map((c, i) => `${i + 1} ${c.name}`).join(' / ')} / ${todo.length + 1} 都不加`)
@@ -514,7 +531,7 @@ ${question}`, card: null }
       const reply = await lookup(resolved.models, status, title)
       const already = new Set(status.targets.map((t) => t.id))
       const todo = resolved.models.filter((c) => !already.has(c.id))
-      if (todo.length) await service.setPendingEntry(key, { kind: 'add-watch', candidates: todo })
+      if (todo.length && reply?.noResults !== true) await service.setPendingEntry(key, { kind: 'add-watch', candidates: todo })
       return reply
     }
     if (resolved && !resolved.models.length) {
@@ -530,7 +547,7 @@ ${question}`, card: null }
       const reply = await lookup(catalog, status, '宋L')
       const already = new Set(status.targets.map((t) => t.id))
       const todo = catalog.filter((c) => !already.has(c.id))
-      if (todo.length) await service.setPendingEntry(key, { kind: 'add-watch', candidates: todo })
+      if (todo.length && reply?.noResults !== true) await service.setPendingEntry(key, { kind: 'add-watch', candidates: todo })
       return reply
     }
 

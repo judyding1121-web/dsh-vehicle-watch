@@ -107,7 +107,33 @@ export function apply(ctx, config) {
   const reportScriptPath = fileURLToPath(new URL('./scripts/make_report.py', import.meta.url))
 
   const service = createService({ config, statePath, reportDir, reportScriptPath, log })
-  const run = (trigger) => service.scan(trigger).catch((err) => log.error('scan failed: %s', err?.stack ?? err))
+  let consecutiveFailures = 0
+  let retryScheduled = false
+  const run = async (trigger) => {
+    let summary = null
+    try {
+      summary = await service.scan(trigger)
+    } catch (err) {
+      log.error('scan failed: %s', err?.stack ?? err)
+    }
+    // 整轮失败（网络/风控/休眠唤醒）后补扫：10 分钟 → 30 分钟，最多 2 次；成功即复位
+    if (summary?.ok) {
+      consecutiveFailures = 0
+      retryScheduled = false
+      return summary
+    }
+    if (summary && summary.ok === false && summary.okTargets === 0 && consecutiveFailures < 2 && !retryScheduled) {
+      consecutiveFailures += 1
+      retryScheduled = true
+      const delayMs = consecutiveFailures === 1 ? 10 * 60_000 : 30 * 60_000
+      log.warn('scan failed (all targets), retry in %d min (%d/2)', Math.round(delayMs / 60000), consecutiveFailures)
+      ctx.timeout(() => {
+        retryScheduled = false
+        return run('retry')
+      }, delayMs)
+    }
+    return summary
+  }
 
   // 本地/公网看板：手机可直接看「本轮新上架/降价」
   if (config.dashboard?.enabled !== false) {

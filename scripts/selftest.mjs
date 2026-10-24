@@ -332,6 +332,21 @@ await test('关键词解析是纯函数：不联网也能解析品牌+车型', a
   assert.equal(r2.models[0].keyword, '蔚来ES8')
   const r3 = await resolveModels('想买个理想的大六座')
   assert.equal(r3.models.length, 0)
+  // 子品牌优先 + 去标点：“比亚迪的方程豹豹8。” → 方程豹豹8
+  const r4 = await resolveModels('@车型查询-二狗二手车测试 查这个比亚迪的方程豹豹8。')
+  assert.equal(r4.brand, '方程豹')
+  assert.equal(r4.models[0].keyword, '方程豹豹8')
+})
+
+await test('查询 0 结果：明确说“没搜到”，不写入待加入监控', async () => {
+  const service = makeService({ targets: [SU7] })
+  service.lookup = async () => ({ agg: { sampleCount: 0, price: {}, listings: [] }, listings: [], keyword: '方程豹豹8' })
+  const handler = createCommandHandler({ service, log: console })
+  const reply = await handler({ text: '@机器人 查这个比亚迪的方程豹豹8。', chatid: 'g11', from: 'u11' })
+  const text = String(reply?.text ?? reply)
+  assert.ok(text.includes('没搜到'), '应明确提示没搜到')
+  assert.ok(!text.includes('要加入长期监控吗'), '0 结果不应再问是否加入')
+  assert.equal(service.pendingMap.size, 0, '0 结果不应写 pending')
 })
 
 const failed = cases.filter((c) => !c.ok)

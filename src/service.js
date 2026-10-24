@@ -201,6 +201,7 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
         priceDrops: results.reduce((n, r) => n + r.priceDrops.length, 0),
         messages: messages.length,
         notify: notifyResults,
+        errors: results.filter((r) => r.status === 'failed').map((r) => ({ targetId: r.target.id, name: r.target.name, error: r.error })),
         report: null,
       }
 

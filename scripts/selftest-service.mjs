@@ -177,6 +177,8 @@ await test('全部失败：保留上一份看板与 latest.json，不写空数�
   assert.equal(summary.skippedOutput, true)
   assert.equal(summary.okTargets, 0)
   assert.equal(summary.messages, 1, '全部失败时应发一条运维告警')
+  assert.equal(summary.errors?.length, 2, '应记录每个失败车型的原因')
+  assert.ok(summary.errors.every((e) => e.error.includes('RGV587')))
 
   assert.equal(await readFile(path.join(reportDir, 'latest.json'), 'utf8'), latestBefore)
   assert.equal(await readFile(first.html, 'utf8'), htmlBefore)

@@ -61,23 +61,34 @@ function normalize(text) {
   return String(text ?? '').replace(/\s+/g, '').toLowerCase()
 }
 
+/** 去掉 @提及、中文/英文标点与空白；保留字母、数字、汉字和 -（DM-i 这类车型名要用）。 */
+function cleanQuery(text) {
+  return String(text ?? '')
+    .replace(/@\S+/g, ' ')
+    .replace(/[。，,！!？?、；;：:·…“”"'（）()【】\[\]{}<>《》]/g, ' ')
+    .replace(/\s+/g, '')
+}
+
+/** 取「最后出现的品牌」：如“比亚迪的方程豹豹8”应识别为方程豹，而不是泛品牌比亚迪。 */
 function matchBrand(query) {
   let best = null
   for (const brand of BRANDS) {
     for (const alias of brand.aliases) {
       const a = normalize(alias)
-      if (a && query.includes(a) && (!best || a.length > best.alias.length)) best = { brand, alias: a }
+      const idx = query.toLowerCase().lastIndexOf(a)
+      if (!a || idx < 0) continue
+      if (!best || idx > best.index || (idx === best.index && a.length > best.alias.length)) {
+        best = { brand, alias: a, index: idx }
+      }
     }
   }
   return best
 }
 
-/** 从品牌之后截取车型（保留原始大小写，如 L9 / ES8 / SU7 / i6）。 */
-function extractModel(rawQuery, alias) {
-  const compact = String(rawQuery ?? '').replace(/\s+/g, '')
-  const idx = compact.toLowerCase().indexOf(alias)
-  if (idx < 0) return ''
-  let rest = compact.slice(idx + alias.length)
+/** 从品牌之后截取车型（保留原始大小写，如 L9 / ES8 / SU7 / i6）；标点已在 cleanQuery 去掉。 */
+function extractModel(query, alias, brandIndex) {
+  if (brandIndex < 0) return ''
+  let rest = query.slice(brandIndex + alias.length)
   rest = rest.replace(/^(的|那个|那款|这款|一台|一个|一辆|辆|台|车|款|：|:)+/, '')
   rest = rest.replace(/(最新|价格|报价|行情|多少钱|二手|车源|的|了|吗|呢|吧).*$/i, '')
   rest = rest.replace(/[的了吗呢吧]+$/, '')
@@ -105,10 +116,10 @@ function buildModels(brand, model) {
  * @returns {Promise<null | {brand:string, model:string, models:Array<{id:string,name:string,keyword:string,referenceOfficialLow:number,referenceOfficialHigh:number}>}>}
  */
 export async function resolveModels(rawQuery) {
-  const query = normalize(rawQuery)
+  const query = cleanQuery(rawQuery)
   if (!query) return null
   const hit = matchBrand(query)
   if (!hit) return null
-  const model = extractModel(rawQuery, hit.alias)
+  const model = extractModel(query, hit.alias, hit.index)
   return { brand: hit.brand.name, model, models: buildModels(hit.brand, model) }
 }
