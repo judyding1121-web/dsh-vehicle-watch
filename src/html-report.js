@@ -72,39 +72,52 @@ function relTime(ms, nowMs) {
   return `${Math.round(diff / day)}天前`
 }
 
-function listingMeta(l, now) {
-  return [
+function priceCompare(price, median) {
+  if (!Number.isFinite(Number(price)) || !Number.isFinite(Number(median)) || !median) return ''
+  const diff = (Number(price) - Number(median)) / Number(median)
+  const pct = Math.abs(diff * 100)
+  if (pct < 2) return '<span class="cmp">≈ 样本中位</span>'
+  return `<span class="cmp ${diff < 0 ? 'good' : 'high'}">${diff < 0 ? '低于' : '高于'}中位 ${pct.toFixed(0)}%</span>`
+}
+
+/** 一条车源卡片：缩略图 + 标题 + 价格/对比 + 关键参数 + 卖家/标签 + 跳转。 */
+function carCard({ listing, now, median, kind, oldPrice }) {
+  const l = listing ?? {}
+  const url = safeUrl(l.detailUrl)
+  const price = Number(l.priceYuan)
+  const cut = kind === 'drop' && Number.isFinite(Number(oldPrice)) && Number.isFinite(price)
+    ? Number(oldPrice) - price
+    : null
+  const chips = [
     l.modelYear ? `${l.modelYear}款` : null,
     l.licenseYear ? `${l.licenseYear}年上牌` : null,
     kmText(l.mileageKm) || null,
     l.area || null,
+    l.wantCount != null ? `${l.wantCount}人想要` : null,
     relTime(l.publishTime, now) || null,
-  ].filter(Boolean).join(' · ')
-}
-
-function newItem(l, now) {
-  return `<li class="item">
-    <div class="item-price">${wan(l.priceYuan)}</div>
-    <div class="item-main">
-      <a class="item-title" href="${safeUrl(l.detailUrl)}" target="_blank" rel="noopener">${esc(l.title)}</a>
-      <div class="item-meta">${esc(listingMeta(l, now))}</div>
+  ].filter(Boolean)
+  const tags = (l.tags ?? [])
+    .filter((t) => !/(想要|小时前|天前|分钟前|上新|发布)/.test(String(t)))
+    .slice(0, 4)
+  const thumb = l.pictureUrl
+    ? `<a class="thumb" href="${url}" target="_blank" rel="noopener"><img src="${esc(l.pictureUrl)}" loading="lazy" referrerpolicy="no-referrer" alt="" onerror="this.parentNode.classList.add('noimg')"></a>`
+    : '<div class="thumb noimg"></div>'
+  return `<li class="car">
+    ${thumb}
+    <div class="car-body">
+      <a class="car-title" href="${url}" target="_blank" rel="noopener" title="${esc(l.title)}">${esc(l.title)}</a>
+      <div class="car-price">
+        <b>${wan(price)}</b>
+        ${kind === 'drop' && cut ? `<span class="old">${wan(oldPrice)}</span><span class="cut">↓${wan(cut)}</span>` : ''}
+        ${priceCompare(price, median)}
+      </div>
+      <div class="chips">${chips.map((c) => `<span>${esc(c)}</span>`).join('')}</div>
+      <div class="car-foot">
+        <span class="seller">${l.seller ? `卖家：${esc(l.seller)}` : ''}</span>
+        <span class="tags">${tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</span>
+        <a class="car-link" href="${url}" target="_blank" rel="noopener">看车源 ›</a>
+      </div>
     </div>
-    <a class="item-link" href="${safeUrl(l.detailUrl)}" target="_blank" rel="noopener">看车源 ›</a>
-  </li>`
-}
-
-function dropItem(d, now) {
-  const l = d.listing ?? {}
-  const oldPrice = Number(d.oldPrice)
-  const newPrice = Number(d.newPrice ?? l.priceYuan)
-  const cut = Number.isFinite(oldPrice) && Number.isFinite(newPrice) ? oldPrice - newPrice : null
-  return `<li class="item">
-    <div class="item-price"><span class="old">${wan(oldPrice)}</span><b class="cut">${wan(newPrice)}</b>${cut ? `<div class="cut-tag">↓${wan(cut)}</div>` : ''}</div>
-    <div class="item-main">
-      <a class="item-title" href="${safeUrl(l.detailUrl)}" target="_blank" rel="noopener">${esc(l.title)}</a>
-      <div class="item-meta">${esc(listingMeta(l, now))}</div>
-    </div>
-    <a class="item-link" href="${safeUrl(l.detailUrl)}" target="_blank" rel="noopener">看车源 ›</a>
   </li>`
 }
 
@@ -117,19 +130,25 @@ function modelGroup(title, items) {
 
 function newSection(targets, now) {
   const groups = targets
-    .map((t) => ({ t, items: (t.newListings ?? []).map((l) => newItem(l, now)) }))
+    .map((t) => ({
+      t,
+      items: (t.newListings ?? []).map((l) => carCard({ listing: l, now, median: t.price?.median, kind: 'new' })),
+    }))
     .filter((g) => g.items.length)
   const total = groups.reduce((n, g) => n + g.items.length, 0)
   if (!total) return ''
   return `<section class="card">
-    <div class="section-head"><h2><span class="dot green"></span>新上架 <em>${total} 台</em></h2><span class="hint">本轮首次出现</span></div>
+    <div class="section-head"><h2><span class="dot green"></span>新上架 <em>${total} 台</em></h2><span class="hint">本轮首次出现 · 对比该车型本轮中位价</span></div>
     ${groups.map((g) => modelGroup(g.t.seriesName, g.items)).join('')}
   </section>`
 }
 
 function dropSection(targets, now) {
   const groups = targets
-    .map((t) => ({ t, items: (t.priceDrops ?? []).map((d) => dropItem(d, now)) }))
+    .map((t) => ({
+      t,
+      items: (t.priceDrops ?? []).map((d) => carCard({ listing: d.listing, now, median: t.price?.median, kind: 'drop', oldPrice: d.oldPrice })),
+    }))
     .filter((g) => g.items.length)
   const total = groups.reduce((n, g) => n + g.items.length, 0)
   if (!total) return ''
@@ -229,15 +248,29 @@ a:hover{text-decoration:underline}
 .group-head .model{font-weight:700;font-size:15px}
 .group-head .group-count{color:var(--muted);font-size:12px}
 .items{list-style:none;margin:0;padding:0}
-.item{display:grid;grid-template-columns:86px 1fr auto;gap:12px;align-items:start;padding:12px 0;border-top:1px dashed #eef0f3}
-.item:first-child{border-top:0}
-.item-price{font-size:16px;font-weight:700;line-height:1.35;font-variant-numeric:tabular-nums;white-space:nowrap}
-.item-price .old{display:block;color:#9ca3af;font-size:12px;font-weight:400;text-decoration:line-through;line-height:1.2}
-.item-price .cut{color:var(--red);display:block}
-.cut-tag{color:var(--red);font-size:12px;font-weight:500;line-height:1.2}
-.item-title{word-break:break-word;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:14px;line-height:1.45}
-.item-meta{color:var(--muted);font-size:12px;margin-top:2px}
-.item-link{color:var(--blue);font-size:13px;white-space:nowrap;padding-top:1px}
+.items{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:14px}
+.car{display:grid;grid-template-columns:116px minmax(0,1fr);gap:14px;padding-top:14px;border-top:1px dashed #eef0f3}
+.car:first-child{border-top:0;padding-top:2px}
+.thumb{display:block;width:116px;height:86px;border-radius:10px;overflow:hidden;background:#f1f5f9;position:relative;flex:none}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb.noimg{background:linear-gradient(135deg,#eef2ff,#f8fafc)}
+.thumb.noimg:after{content:"闲鱼车源";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:12px}
+.car-body{min-width:0}
+.car-title{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-size:14px;line-height:1.5;color:var(--ink);word-break:break-word}
+.car-price{display:flex;align-items:baseline;gap:8px;margin-top:5px;flex-wrap:wrap}
+.car-price b{font-size:20px;color:var(--red);font-variant-numeric:tabular-nums;line-height:1.2}
+.car-price .old{color:#94a3b8;text-decoration:line-through;font-size:12px}
+.car-price .cut{background:#fef2f2;color:var(--red);border-radius:6px;padding:1px 6px;font-size:12px;font-weight:600}
+.cmp{font-size:12px;color:#15803d;background:#f0fdf4;border-radius:999px;padding:1px 8px}
+.cmp.good{color:#15803d;background:#dcfce7}
+.cmp.high{color:#b45309;background:#fffbeb}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chips span{font-size:12px;background:#f1f5f9;color:#475569;border-radius:6px;padding:1px 7px;white-space:nowrap}
+.car-foot{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.seller{font-size:12px;color:var(--muted)}
+.tags{display:flex;gap:4px;flex-wrap:wrap}
+.tag{display:inline-block;font-size:11px;color:var(--muted);background:#f8fafc;border:1px solid #eef0f3;border-radius:6px;padding:0 6px;white-space:nowrap}
+.car-link{margin-left:auto;font-size:13px;color:var(--blue);white-space:nowrap}
 .empty{text-align:center;padding:28px 18px}
 .empty-icon{width:40px;height:40px;line-height:40px;border-radius:50%;background:#f0fdf4;color:var(--green);font-size:20px;margin:0 auto 10px}
 .empty h2{margin:0 0 6px;font-size:17px}
@@ -267,10 +300,12 @@ td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
   .kpis{gap:8px}
   .kpi{padding:10px 12px}
   .kpi .v{font-size:22px}
-  .item{grid-template-columns:minmax(0,78px) minmax(0,1fr);gap:10px}
+  .car{grid-template-columns:92px minmax(0,1fr);gap:10px}
+  .thumb{width:92px;height:70px}
+  .car-price b{font-size:18px}
+  .car-link{margin-left:0;padding-top:2px}
   .stats{font-size:12px}
   .stats th,.stats td{padding:7px 4px}
-  .item-link{grid-column:2;padding-top:2px}
   .card{padding:14px}
 }
 @media print{body{background:#fff}.details{display:none}}

@@ -32,7 +32,7 @@ function rawCard({ id = 'c1', title, area = '雁塔区', price = 180000, time = 
             price: [{ text: '¥' }, { text: (price / 10000).toFixed(2) }, { text: '万' }],
             fishTags: { z: { tagList: tags.map((t) => ({ data: { content: t } })) } },
             userNickName: '测试卖家',
-            picUrl: null,
+            picUrl: 'https://image-public.guazistatic.com/test.jpg',
           },
           clickParam: {
             args: {
@@ -57,6 +57,7 @@ function fixtureListings(keyword, count = 6) {
     cityDesc: '西安',
     publishTime: 1792638407000,
     seller: '测试卖家',
+    pictureUrl: 'https://image-public.guazistatic.com/test.jpg',
     wantCount: i * 2,
     tags: ['1天内上新'],
     modelYear: 2024,
@@ -261,6 +262,7 @@ await test('闲鱼卡片解析：标题/价格/地区/想要数/年款里程', a
   assert.equal(listing.modelYear, 2024)
   assert.equal(listing.mileageKm, 38000)
   assert.equal(listing.detailUrl, 'https://www.goofish.com/item?id=1092982842778')
+  assert.equal(listing.pictureUrl, 'https://image-public.guazistatic.com/test.jpg')
 })
 
 await test('过滤：非车商品/租车/事故残值/无关车型 都被剔除', async () => {
@@ -308,9 +310,11 @@ await test('HTML 看板：新上架/降价说清楚，车型行情可选展开',
   latest.targets[0].priceDrops = []
   const html = renderHtmlReport({ latest, intervalHours: 2 })
   assert.ok(html.startsWith('<!doctype html>'))
-  for (const kw of ['新上架', '降价', '各车型行情', '本轮样本', '小米SU7', '样本明细']) {
+  for (const kw of ['新上架', '降价', '各车型行情', '本轮样本', '小米SU7', '样本明细', '看车源', '人想要', '卖家：']) {
     assert.ok(html.includes(kw), `看板应包含「${kw}」`)
   }
+  assert.ok(html.includes('image-public.guazistatic.com'), '应渲染车源缩略图')
+  assert.ok(html.includes('样本中位') || html.includes('低于中位') || html.includes('高于中位'), '应显示与中位价的对比')
   assert.ok(html.includes('https://www.goofish.com/item?id='), '看板应包含闲鱼商品链接')
   assert.ok(!html.includes('>undefined<'), '看板不应出现空字段 undefined')
 

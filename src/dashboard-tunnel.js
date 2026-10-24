@@ -135,3 +135,74 @@ export async function startQuickTunnel({ port, command = '', log = console } = {
   }
   throw lastError ?? new Error('未找到 cloudflared（可 brew install cloudflared，或在 dashboard.tunnelCommand 指定路径）')
 }
+
+/**
+ * 启动 Cloudflare 命名隧道（稳定公网地址）：cloudflared tunnel run，token 从环境变量传入
+ * （避免出现在进程参数里）。启动成功以日志出现 “Registered tunnel connection” 为准。
+ * 公网地址由调用方通过 dashboard.publicUrl 提供。
+ */
+export async function startNamedTunnel({ token, command = '', log = console } = {}) {
+  if (!token) throw new Error('缺少 dashboard.tunnelToken')
+  let lastError = null
+  for (const bin of binaryCandidates(command)) {
+    if (bin !== 'cloudflared' && !isExecutable(bin)) continue
+    try {
+      const { child, onExit } = await new Promise((resolve, reject) => {
+        const proc = spawn(bin, ['tunnel', '--no-autoupdate', 'run'], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, NO_COLOR: '1', TUNNEL_TOKEN: token },
+        })
+        let buffer = ''
+        let done = false
+        const timer = setTimeout(() => {
+          if (done) return
+          done = true
+          try { proc.kill('SIGTERM') } catch { /* ignore */ }
+          reject(new Error('命名隧道启动超时（60s 内未注册成功）'))
+        }, 60_000)
+        const onData = (chunk) => {
+          if (done) return
+          buffer += chunk.toString()
+          if (/Registered tunnel connection|Connection .*registered/i.test(buffer)) {
+            done = true
+            clearTimeout(timer)
+            let exitHook = null
+            proc.on('exit', (code) => { try { exitHook?.(code) } catch { /* ignore */ } })
+            resolve({ child: proc, onExit(cb) { exitHook = cb } })
+          }
+        }
+        proc.stdout?.on('data', onData)
+        proc.stderr?.on('data', onData)
+        proc.once('error', (err) => {
+          if (done) return
+          done = true
+          clearTimeout(timer)
+          reject(err)
+        })
+        proc.once('exit', (code) => {
+          if (done) return
+          done = true
+          clearTimeout(timer)
+          reject(new Error(`cloudflared 退出（code ${code}）`))
+        })
+      })
+      log.info?.('named tunnel ready (%s)', bin)
+      return {
+        url: null,
+        bin,
+        onExit,
+        close: () => new Promise((resolve) => {
+          let settled = false
+          const finish = () => { if (!settled) { settled = true; resolve() } }
+          child.once('exit', finish)
+          try { child.kill('SIGTERM') } catch { /* ignore */ }
+          setTimeout(() => { try { child.kill('SIGKILL') } catch { /* ignore */ } finish() }, 3000)
+        }),
+      }
+    } catch (err) {
+      lastError = err
+      log.warn?.('named tunnel candidate failed (%s): %s', bin, err.message)
+    }
+  }
+  throw lastError ?? new Error('命名隧道启动失败（检查 tunnelToken / cloudflared）')
+}

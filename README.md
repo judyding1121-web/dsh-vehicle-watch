@@ -66,7 +66,7 @@ pnpm install        # 本地 link 安装不会替你装 ws，必须手动执行�
 ### 方式 C：离线 tarball
 
 ```bash
-pnpm pack           # 生成 dsh-vehicle-watch-0.3.4.tgz
+pnpm pack           # 生成 dsh-vehicle-watch-0.4.0.tgz
 ```
 
 把 `.tgz` 拷到另一台电脑，安装时填 tarball 的绝对路径（同样支持）。
@@ -103,6 +103,8 @@ pnpm pack           # 生成 dsh-vehicle-watch-0.3.4.tgz
     dashboard:
       enabled: true              # 内置只读 HTTP 看板
       public: true               # 用 cloudflared 快速隧道映射成公网地址（户外手机可看）
+      publicUrl: ''              # 固定公网地址（命名隧道 / Tailscale 时填写；见下文）
+      tunnelToken: ''            # Cloudflare 命名隧道 token（填了地址可固定）
       tunnelCommand: ''          # cloudflared 路径；空 = 自动查找
       port: 47800
       host: ''                   # 空 = 0.0.0.0；只在本机看可填 127.0.0.1
@@ -148,6 +150,8 @@ pnpm pack           # 生成 dsh-vehicle-watch-0.3.4.tgz
 | `report.html` | true | 每次扫描后生成 `二手车监控-最新.html` 看板（不依赖 Python；关掉也不影响推送/Excel） |
 | `dashboard.enabled` | true | 内置只读 HTTP 看板服务（手机可访问：公网隧道/局域网） |
 | `dashboard.public` | true | 启动 Cloudflare quick tunnel（需本机有 `cloudflared`），户外手机可看；失败自动退回局域网 |
+| `dashboard.publicUrl` | `''` | 固定公网地址：命名隧道/反向代理/Tailscale 时填这里，插件不再使用随机 quick tunnel |
+| `dashboard.tunnelToken` | `''` | Cloudflare 命名隧道 token；与 `publicUrl` 一起用可让链接永久固定 |
 | `dashboard.tunnelCommand` | `''` | cloudflared 路径；空 = 自动查找（`~/.npm-global/bin`、Homebrew 等） |
 | `dashboard.port` | 47800 | 端口；被占用时自动 +1 重试 |
 | `dashboard.host` | `''` | 空 = 0.0.0.0（局域网可访问）；只在本机看填 `127.0.0.1` |
@@ -183,6 +187,19 @@ Cookie 会过期，失效后插件会自动退回匿名搜索；若频繁被风�
 - 「降价」：原价 → 现价、降幅；
 - 没有变化时直接显示「本轮没有新上架，也没有降价」；
 - 底部一行：各车型样本/最低/中位/准新/较上次，快速看行情。
+
+### 看板链接为什么会变？怎么固定？
+
+默认使用 **Cloudflare quick tunnel**：免账号、开箱即用，但**地址是随机临时域名，重启/隧道重建后会变**，适合“每次在机器人里发「看板」拿当前链接”，不适合长期收藏。
+
+要固定链接，二选一（都已支持）：
+
+| 方案 | 适合 | 配置 | 说明 |
+|---|---|---|---|
+| **Cloudflare 命名隧道** | 有域名接入 Cloudflare，想公网随时可看 | `dashboard.publicUrl: https://cars.example.com`<br>`dashboard.tunnelToken: <token>` | Cloudflare Zero Trust → Tunnels → 新建隧道，Public hostname 指向 `http://localhost:47800`，复制 token；重启插件生效，地址永久固定 |
+| **Tailscale（不公开到公网）** | 只想自己手机看，不想暴露公网 | `dashboard.publicUrl: http://<Mac的Tailscale IP>:47800`<br>`dashboard.public: false` | Mac 与手机都装 Tailscale；户外有网即可访问，链接固定且只有自己设备能连 |
+
+> 只填 `publicUrl`（不填 token）时，插件认为你已有自己的反向代理/私有网络，不再启动临时隧道。
 
 **手机查看（户外也行）**：插件启动本地只读看板服务（默认 `47800`），并尝试用 **Cloudflare quick tunnel** 映射成公网 HTTPS 地址（需要本机有 `cloudflared`，无需 Cloudflare 账号）。
 
@@ -288,7 +305,7 @@ CI（GitHub Actions，`.github/workflows/ci.yml`）在每次 push / PR 时执行
 cd plugins/dsh-vehicle-watch
 git init -b main
 git add .
-git commit -m "feat: dsh-vehicle-watch v0.3.4"
+git commit -m "feat: dsh-vehicle-watch v0.4.0"
 
 # 有 gh CLI：
 gh repo create dsh-vehicle-watch --public --source=. --push

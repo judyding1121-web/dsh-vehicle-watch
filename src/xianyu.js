@@ -124,6 +124,11 @@ export function parseXianyuCard(card) {
     publishTime,
     publishAt: publishTime ? new Date(publishTime).toISOString() : null,
     seller: String(ex.userNickName ?? '').trim(),
+    pictureUrl: (() => {
+      const pic = String(ex.picUrl ?? ex.pictureUrl ?? '').trim()
+      if (!pic) return null
+      return pic.replace(/^http:\/\//i, 'https://')
+    })(),
     categoryId: String(args.cCatId ?? args.catId ?? ''),
     wantCount: parseWant(tags),
     tags,

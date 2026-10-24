@@ -15,7 +15,7 @@ import { createCommandHandler } from './src/commands.js'
 import { createLlmAnalyzer } from './src/llm-analyzer.js'
 import { REPORT_NAME } from './src/html-report.js'
 import { dashboardUrls, startDashboardServer } from './src/dashboard-server.js'
-import { startQuickTunnel } from './src/dashboard-tunnel.js'
+import { startNamedTunnel, startQuickTunnel } from './src/dashboard-tunnel.js'
 
 export const name = 'vehicle-watch'
 export const inject = ['tools', 'timer']
@@ -58,6 +58,8 @@ export const Config = z.object({
   dashboard: z.object({
     enabled: z.boolean().default(true),
     public: z.boolean().default(true),   // 启动 Cloudflare 快速隧道，户外手机可看
+    publicUrl: z.string().default(''),   // 固定公网地址（命名隧道/反向代理/Tailscale 时填写）
+    tunnelToken: z.string().default(''), // Cloudflare 命名隧道 token（可让地址固定）
     tunnelCommand: z.string().default(''), // cloudflared 路径；空 = 自动查找
     port: z.natural().default(47800),
     host: z.string().default(''),        // 空 = 0.0.0.0（同一局域网可访问）
@@ -154,37 +156,42 @@ export function apply(ctx, config) {
       }
 
       const urls = dashboardUrls(started.port)
+      const stableUrl = String(config.dashboard?.publicUrl || '').trim()
+      const tunnelToken = String(config.dashboard?.tunnelToken || '').trim()
       let tunnel = null
       let disposed = false
       const publish = () => service.setDashboard({
         enabled: true,
         port: started.port,
-        url: tunnel?.url || urls.lan || urls.local,
-        publicUrl: tunnel?.url ?? null,
-        publicPending: config.dashboard?.public !== false && !tunnel,
-        urls: { ...urls, public: tunnel?.url ?? null },
+        url: stableUrl || tunnel?.url || urls.lan || urls.local,
+        publicUrl: stableUrl || tunnel?.url || null,
+        stable: Boolean(stableUrl),
+        publicPending: !stableUrl && config.dashboard?.public !== false && !tunnel,
+        urls: { ...urls, public: stableUrl || tunnel?.url || null },
       })
       publish()
-      log.info('dashboard ready: %s (phone: %s)', urls.local, urls.lan || urls.local)
+      log.info('dashboard ready: %s (phone: %s)', urls.local, stableUrl || urls.lan || urls.local)
 
       // 公网隧道在后台启动，不阻塞插件激活；退出时回退到局域网并最多重试 3 次
       let tunnelAttempts = 0
       let retryTimer = null
       const startTunnel = async () => {
         if (disposed || config.dashboard?.public === false) return
+        if (stableUrl && !tunnelToken) return // 固定地址由用户自己的命名隧道/反向代理/Tailscale 提供，插件不再另起隧道
         try {
-          const t = await startQuickTunnel({ port: started.port, command: config.dashboard?.tunnelCommand || '', log })
+          const t = tunnelToken
+            ? await startNamedTunnel({ token: tunnelToken, command: config.dashboard?.tunnelCommand || '', log })
+            : await startQuickTunnel({ port: started.port, command: config.dashboard?.tunnelCommand || '', log })
           if (disposed) { t.close().catch(() => {}); return }
           tunnel = t
-          urls.public = t.url
+          if (t.url) urls.public = t.url
           tunnelAttempts = 0
           publish()
-          log.info('dashboard public: %s', t.url)
+          log.info('dashboard public: %s', stableUrl || t.url || '(命名隧道)')
           t.onExit?.((code) => {
             if (disposed) return
             log.warn('public tunnel exited (code %s)，5s 后重试', code)
             tunnel = null
-            urls.public = null
             publish()
             if (tunnelAttempts < 3) {
               tunnelAttempts += 1
@@ -199,7 +206,11 @@ export function apply(ctx, config) {
           }
         }
       }
-      startTunnel()
+      if (stableUrl && !tunnelToken) {
+        log.info('dashboard stable url configured: %s（不再启动临时隧道）', stableUrl)
+      } else {
+        startTunnel()
+      }
 
       return () => {
         disposed = true
