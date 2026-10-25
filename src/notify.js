@@ -107,53 +107,55 @@ function overflowCard({ seriesName, count, seriesUrl }) {
   }
 }
 
-export function buildMessages(results, { cityName = '西安', maxPush = 8, notifyOnFirstRun = true } = {}) {
-  const messages = []
-  for (const r of results) {
-    if (r.status === 'failed') continue
-    const seriesName = r.agg.seriesName
-    const seriesUrl = safeUrl(r.agg.url, GOOFISH_HOME)
+export function buildMessages(results, {
+  cityName = '西安', maxPush = 8, notifyOnFirstRun = true, dashboardUrl = '',
+} = {}) {
+  const successful = (results ?? []).filter((r) => r.status !== 'failed')
+  if (!successful.length) return []
+  const baseline = successful.every((r) => r.firstRun)
+  if (baseline && !notifyOnFirstRun) return []
 
-    if (r.firstRun) {
-      if (!notifyOnFirstRun) continue
-      messages.push({
-        targetId: r.agg.targetId,
-        kind: 'first-run',
-        text: `【${seriesName} · ${cityName}】闲鱼监控已启动\n当前样本 ${r.agg.sampleCount} 台，中位价 ${formatWan(r.agg.price?.median)}（卖家报价）\n${seriesUrl}`,
-        card: firstRunCard({ agg: r.agg, cityName }),
-      })
-      continue
-    }
+  const changes = successful.flatMap((r) => [
+    ...(r.newListings ?? []).map((listing) => ({ kind: 'new', seriesName: r.agg.seriesName, listing })),
+    ...(r.priceDrops ?? []).map((drop) => ({ kind: 'drop', seriesName: r.agg.seriesName, ...drop })),
+  ])
+  if (!baseline && !changes.length) return []
 
-    for (const listing of r.newListings.slice(0, maxPush)) {
-      const detailUrl = safeUrl(listing.detailUrl, seriesUrl)
-      messages.push({
-        targetId: r.agg.targetId,
-        kind: 'new',
-        text: `【${seriesName} · ${cityName}】新上架\n${listing.title}\n${formatWan(listing.priceYuan)}｜${listing.area || cityName}｜${mileageText(listing.mileageKm)}\n${decisionText(listing) ? decisionText(listing) + '\n' : ''}${detailUrl}`,
-        card: listingCard({ seriesName, kind: 'new', listing, cityName }),
-      })
-    }
-    if (r.newListings.length > maxPush) {
-      messages.push({
-        targetId: r.agg.targetId,
-        kind: 'new-overflow',
-        text: `【${seriesName} · ${cityName}】另有 ${r.newListings.length - maxPush} 台新上架，查看 ${seriesUrl}`,
-        card: overflowCard({ seriesName, count: r.newListings.length - maxPush, seriesUrl }),
-      })
-    }
-
-    for (const d of r.priceDrops.slice(0, maxPush)) {
-      const detailUrl = safeUrl(d.listing.detailUrl, seriesUrl)
-      messages.push({
-        targetId: r.agg.targetId,
-        kind: 'drop',
-        text: `【${seriesName} · ${cityName}】降价\n${d.listing.title}\n${formatWan(d.oldPrice)} → ${formatWan(d.newPrice)}（↓${formatWan(d.oldPrice - d.newPrice)}）\n${decisionText(d.listing) ? decisionText(d.listing) + '\n' : ''}${detailUrl}`,
-        card: listingCard({ seriesName, kind: 'drop', listing: d.listing, cityName, oldPrice: d.oldPrice }),
-      })
-    }
+  changes.sort((a, b) => a.kind === b.kind ? 0 : (a.kind === 'drop' ? -1 : 1))
+  const newCount = changes.filter((c) => c.kind === 'new').length
+  const dropCount = changes.length - newCount
+  const totalSamples = successful.reduce((n, r) => n + (r.agg.sampleCount ?? 0), 0)
+  const homeUrl = safeUrl(dashboardUrl, safeUrl(changes[0]?.listing?.detailUrl, safeUrl(successful[0]?.agg?.url, GOOFISH_HOME)))
+  const title = baseline ? `监控已启动｜${successful.length} 个车型` : `本轮发现 ${changes.length} 个变化`
+  const highlights = baseline
+    ? successful.slice(0, Math.max(1, maxPush)).map((r) => `${r.agg.seriesName}｜样本 ${r.agg.sampleCount} 台｜中位 ${formatWan(r.agg.price?.median)}`)
+    : changes.slice(0, Math.max(1, maxPush)).map((c) => c.kind === 'drop'
+      ? `${c.seriesName}｜${formatWan(c.oldPrice)} → ${formatWan(c.newPrice)}｜降价 ${formatWan(c.oldPrice - c.newPrice)}`
+      : `${c.seriesName}｜${formatWan(c.listing.priceYuan)}｜${clip(c.listing.title, 28)}`)
+  const card = {
+    card_type: 'text_notice',
+    source: { desc: baseline ? '闲鱼 · 监控基线' : '闲鱼 · 本轮变化', desc_color: 0 },
+    main_title: {
+      title: clip(title, 26),
+      desc: clip(baseline ? `${cityName}｜样本 ${totalSamples} 台` : `新上架 ${newCount} 台｜降价 ${dropCount} 台`, 30),
+    },
+    emphasis_content: baseline
+      ? { title: clip(String(totalSamples), 10), desc: '当前样本' }
+      : { title: clip(String(newCount), 10), desc: `新上架｜降价 ${dropCount} 台` },
+    sub_title_text: clip(highlights.join('\n'), 112),
+    horizontal_content_list: successful.slice(0, 6).map((r) => ({
+      keyname: clip(r.agg.seriesName, 5),
+      value: clip(baseline
+        ? `${r.agg.sampleCount} 台｜中位 ${formatWan(r.agg.price?.median)}`
+        : `新上 ${(r.newListings ?? []).length}｜降价 ${(r.priceDrops ?? []).length}`, 26),
+    })),
+    jump_list: [{ type: 1, title: dashboardUrl ? '查看全部变化' : '查看闲鱼车源', url: homeUrl }],
+    card_action: { type: 1, url: homeUrl },
   }
-  return messages
+  const text = baseline
+    ? `【二手车监控已启动】\n${highlights.join('\n')}\n${homeUrl}`
+    : `【本轮发现 ${changes.length} 个变化】\n新上架 ${newCount} 台｜降价 ${dropCount} 台\n${highlights.join('\n')}\n${homeUrl}`
+  return [{ targetId: null, kind: baseline ? 'first-run-summary' : 'scan-summary', text, card }]
 }
 
 /** WeCom markdown 上限 4096 字节（UTF-8）；按字节截断，避免中文被截半。 */

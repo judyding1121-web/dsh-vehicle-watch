@@ -1,4 +1,5 @@
 import { resolveModels } from './model-resolver.js'
+import { callbackButton, decodeAction, toButtonCard, urlButton } from './card-utils.js'
 
 const GOOFISH_HOME = 'https://www.goofish.com/'
 
@@ -9,11 +10,12 @@ const CATALOG = [
 const HELP = [
   '【二手车监控 · 指令】',
   '查 / 行情 / 状态：已监控车型的闲鱼样本与中位价',
-  '最新 / 新上架：本轮新增车源',
-  '找宋L：先查宋L 的闲鱼行情（关键词“比亚迪宋L”），再问你是否加入监控',
-  '扫描 / 刷新：立即抓一次（有新变化推卡片）',
-  '看板：手机上打开「本轮新上架 / 降价」页面',
-  '取消：取消当前“是否加入监控”的询问',
+  '最新 / 新上架：查看新上架和降价',
+  '找宋L：查询宋L 行情；结果卡可直接加入监控',
+  '监控 / 监控管理：查看、暂停或恢复车型',
+  '扫描 / 刷新：立即抓一次，完成后在原会话通知',
+  '看板：打开「动态 / 全部车源 / 监控」手机页面',
+  '取消：取消当前待确认操作',
   '帮助：显示这条',
 ].join('\n')
 
@@ -185,24 +187,59 @@ async function sendQueryCards(service, status, overviewCard, details, text) {
   return { text, card: overviewCard }
 }
 
-/** 单次查询结果卡：整张卡点开就是一个干净的车源卡片列表页。 */
-function queryCard({ name, desc = '西安 · 闲鱼在售', url }) {
-  return {
+/** 单次查询结果卡：智能机器人只回复这一张，详情统一进入看板。 */
+function queryCard({ name, desc = '西安 · 闲鱼在售', url, keyword = name, watched = false }) {
+  const targetUrl = url || keywordUrl(keyword || name)
+  const card = {
     card_type: 'text_notice',
     source: { desc: '闲鱼 · 实时查询', desc_color: 0 },
     main_title: { title: clip(name, 26), desc: clip(desc, 30) },
     emphasis_content: { title: '查看', desc: '在售车源' },
-    sub_title_text: '',
-    jump_list: [{ type: 1, title: '查看车源', url }],
-    card_action: { type: 1, url },
+    sub_title_text: watched ? '已在监控中；新上架和降价会自动提醒。' : '临时查询，尚未加入长期监控。',
+    jump_list: [{ type: 1, title: '查看车源', url: targetUrl }],
+    card_action: { type: 1, url: targetUrl },
   }
+  return toButtonCard(card, [
+    urlButton('查看全部', targetUrl),
+    watched ? null : callbackButton('加入监控', 'watch_add', { name, keyword: keyword || name }),
+    callbackButton('刷新', 'query_refresh', { name, keyword: keyword || name }),
+  ])
 }
 
-/** 查询结果页地址（看板服务提供 /query）。 */
+/** 查询结果页地址（看板服务提供 /query），保留看板鉴权参数。 */
 function queryPageUrl(status, keyword) {
   const base = status?.dashboard?.url
   if (!base || !keyword) return null
-  try { return new URL(`query?q=${encodeURIComponent(keyword)}`, base).href } catch { return null }
+  try {
+    const url = new URL(base)
+    url.pathname = `${url.pathname.replace(/\/$/, '')}/query`.replace(/\/+/g, '/')
+    url.searchParams.set('q', keyword)
+    return url.href
+  } catch { return null }
+}
+
+function monitorCard(status) {
+  const targets = status.allTargets ?? status.targets ?? []
+  const enabled = targets.filter((t) => t.enabled !== false)
+  const rows = targets.slice(0, 6).map((t) => ({
+    keyname: clip(t.name, 5),
+    value: t.enabled === false ? '已暂停' : (t.initialized === false ? '监控中｜待扫描' : '监控中'),
+  }))
+  const homeUrl = status.dashboard?.url || GOOFISH_HOME
+  const card = {
+    card_type: 'text_notice',
+    source: { desc: '二手车监控 · 管理', desc_color: 0 },
+    main_title: { title: '监控管理', desc: `${enabled.length} 个启用｜${targets.length - enabled.length} 个暂停` },
+    emphasis_content: { title: String(enabled.length), desc: '个监控车型' },
+    sub_title_text: clip('按钮可切换前 5 个车型；完整清单和新增入口请打开看板。', 112),
+    horizontal_content_list: rows,
+    card_action: { type: 1, url: homeUrl },
+  }
+  return toButtonCard(card, [
+    ...targets.slice(0, 4).map((t) => callbackButton(`${t.enabled === false ? '恢复' : '暂停'}${clip(t.name, 5)}`, 'monitor_toggle', { id: t.id })),
+    urlButton('看板管理', homeUrl),
+    callbackButton('刷新清单', 'monitor'),
+  ])
 }
 
 function summaryCard(status) {
@@ -211,16 +248,22 @@ function summaryCard(status) {
     value: clip(`${t.initialized === false ? '待扫描' : `${wan(t.medianPrice)}｜${t.sampleCount}台`}`, 26),
   }))
   const jumps = status.targets.slice(0, 3).filter((t) => t.url).map((t) => ({ type: 1, title: clip(`${t.name} 车源`, 13), url: t.url }))
-  return {
+  const homeUrl = status.dashboard?.url || jumps[0]?.url || GOOFISH_HOME
+  const card = {
     card_type: 'text_notice',
     source: { desc: '闲鱼 · 卖家报价', desc_color: 0 },
     main_title: { title: '西安二手车行情', desc: `${status.targets.length} 个车型｜样本内` },
     emphasis_content: { title: clip(String(status.targets.filter((t) => t.initialized !== false).length), 10), desc: '个在监控' },
-    sub_title_text: clip('回复车型名看最低价 3 台，回复“找宋L”查新车系。', 112),
+    sub_title_text: clip('发车型名查询；新上架和降价会自动聚合提醒。', 112),
     horizontal_content_list: rows,
     jump_list: jumps,
-    card_action: { type: 1, url: jumps[0]?.url ?? 'https://www.goofish.com/' },
+    card_action: { type: 1, url: homeUrl },
   }
+  return toButtonCard(card, [
+    urlButton('查看全部', homeUrl),
+    callbackButton('监控管理', 'monitor'),
+    callbackButton('刷新', 'scan'),
+  ])
 }
 
 function targetCard(target, listings, latestTarget) {
@@ -248,22 +291,55 @@ function targetCard(target, listings, latestTarget) {
   }
 }
 
-function latestCard(latestData) {
-  const rows = (latestData.targets ?? []).filter((t) => (t.newListings ?? []).length).slice(0, 6).map((t) => ({
+function latestCard(latestData, status) {
+  const targets = latestData.targets ?? []
+  const newCount = targets.reduce((n, t) => n + (t.newListings ?? []).length, 0)
+  const dropCount = targets.reduce((n, t) => n + (t.priceDrops ?? []).length, 0)
+  const rows = targets.filter((t) => (t.newListings ?? []).length || (t.priceDrops ?? []).length).slice(0, 6).map((t) => ({
     keyname: clip(t.seriesName, 5),
-    value: `${t.newListings.length} 台新上架`,
+    value: `新上 ${(t.newListings ?? []).length}｜降价 ${(t.priceDrops ?? []).length}`,
   }))
-  const jumps = (latestData.targets ?? []).filter((t) => t.url).slice(0, 3).map((t) => ({ type: 1, title: clip(`${t.seriesName} 车系`, 13), url: t.url }))
-  return {
+  const homeUrl = status?.dashboard?.url || targets.find((t) => t.url)?.url || GOOFISH_HOME
+  const card = {
     card_type: 'text_notice',
-    source: { desc: '闲鱼 · 卖家报价', desc_color: 0 },
-    main_title: { title: '本轮新上架', desc: `${rows.reduce((n, r) => n + parseInt(r.value), 0)} 台` },
-    emphasis_content: { title: clip(String(rows.reduce((n, r) => n + parseInt(r.value), 0)), 10), desc: '台' },
-    sub_title_text: clip('点击车系查看全部；回复车型名看行情。', 112),
+    source: { desc: '闲鱼 · 最近一轮扫描', desc_color: 0 },
+    main_title: { title: '最新变化', desc: `${newCount + dropCount} 个变化｜新上 ${newCount}｜降价 ${dropCount}` },
+    emphasis_content: { title: clip(String(newCount + dropCount), 10), desc: '新上架＋降价' },
+    sub_title_text: clip(`新上架 ${newCount} 台｜降价 ${dropCount} 台；点击查看完整车源。`, 112),
     horizontal_content_list: rows,
-    jump_list: jumps,
-    card_action: { type: 1, url: jumps[0]?.url ?? 'https://www.goofish.com/' },
+    jump_list: [{ type: 1, title: '查看全部变化', url: homeUrl }],
+    card_action: { type: 1, url: homeUrl },
   }
+  return toButtonCard(card, [urlButton('查看全部', homeUrl), callbackButton('刷新', 'scan')])
+}
+
+function scanResultCard(summary, status) {
+  const busy = summary?.busy
+  const ok = summary?.ok
+  const newCount = summary?.newListings ?? 0
+  const dropCount = summary?.priceDrops ?? 0
+  const errors = (summary?.errors ?? []).map((e) => `${e.name}：${e.error}`).join('\n')
+  const homeUrl = status?.dashboard?.url || GOOFISH_HOME
+  const title = busy ? '扫描未开始' : (ok ? `扫描完成｜${summary.okTargets}/${summary.targets} 成功` : '扫描失败')
+  const desc = busy
+    ? '上一轮扫描仍在进行'
+    : (ok ? `新上架 ${newCount} 台｜降价 ${dropCount} 台` : '上一份看板和报表已保留')
+  const sub = busy
+    ? '无需重复操作，上一轮完成后会推送结果。'
+    : (ok
+      ? (newCount + dropCount ? '变化车源已更新，点击查看全部。' : '本次没有新上架，也没有降价。')
+      : clip(errors || summary?.message || '请稍后重试。', 112))
+  const card = {
+    card_type: 'text_notice',
+    source: { desc: '二手车监控 · 手动扫描', desc_color: 0 },
+    main_title: { title: clip(title, 26), desc: clip(desc, 30) },
+    emphasis_content: { title: busy ? '进行中' : (ok ? String(newCount + dropCount) : '失败'), desc: busy ? '请稍候' : '个变化' },
+    sub_title_text: clip(sub, 112),
+    horizontal_content_list: [],
+    jump_list: [{ type: 1, title: '打开看板', url: homeUrl }],
+    card_action: { type: 1, url: homeUrl },
+  }
+  return toButtonCard(card, [urlButton('查看全部', homeUrl), busy ? null : callbackButton('再次扫描', 'scan')])
 }
 
 /** 车型目录匹配：宋L 默认同时匹配 EV / DM-i；明确提到 EV 或 DM 时只取一个。 */
@@ -288,49 +364,35 @@ function detectConfigured(text, status) {
   return hit ? status.targets.find((t) => t.id === hit.id) ?? null : null
 }
 
-export function createCommandHandler({ service, log = console, analyzer = null }) {
+export function createCommandHandler({ service, log = console, analyzer = null, pushMessage = null }) {
+  function startScan(context) {
+    const scanning = service.scan('aibot', { suppressNotify: true })
+    scanning.then(async (summary) => {
+      const status = await service.status()
+      const message = { text: '', card: scanResultCard(summary, status) }
+      if (pushMessage) await pushMessage(context, message)
+      else log.info?.('aibot scan done: new=%d drop=%d', summary.newListings ?? 0, summary.priceDrops ?? 0)
+    }).catch(async (err) => {
+      log.warn?.('aibot scan failed: %s', err.message)
+      if (pushMessage) {
+        const status = await service.status()
+        await pushMessage(context, { text: '', card: scanResultCard({ ok: false, message: err.message, errors: [] }, status) })
+      }
+    }).catch((err) => log.warn?.('aibot scan completion push failed: %s', err.message))
+    const count = Array.isArray(context?.targets) ? context.targets.length : null
+    return `正在扫描${count ? ` ${count} 个` : '已监控'}车型，完成后会在此会话通知你。`
+  }
+
   async function summary() {
     const status = await service.status()
-    const latestData = await service.readLatest()
-    const lines = ['【西安二手车行情 · 样本内】', `扫描：${shortTime(status.lastRun?.scannedAt)}`]
-    for (const t of status.targets) {
-      if (t.initialized === false) lines.push(`${t.name}：待首次扫描`)
-      else lines.push(`${t.name}：中位 ${wan(t.medianPrice)}｜样本 ${t.sampleCount} 台`)
-    }
-    lines.push('', '回复车型名看最低价车源，回复“最新”看新增，回复“找宋L”查车源。')
-    const picked = collectListings(latestData, status, null, false, 5)
-    const details = picked.map((x) => detailCard({ ...x, landingBase: status.dashboard?.url || '' }))
-    return sendQueryCards(service, status, summaryCard(status), details, `已发概览卡 + ${details.length} 张详情卡到群里。`)
+    return { text: '', card: summaryCard(status) }
   }
 
   async function latest() {
     const latestData = await service.readLatest()
     if (!latestData) return '还没有扫描结果，回复“扫描”先抓一次。'
     const status = await service.status()
-    const lines = ['【本轮新上架】']
-    let total = 0
-    for (const t of latestData.targets ?? []) {
-      const items = t.newListings ?? []
-      if (!items.length) continue
-      total += items.length
-      lines.push(`\n${t.seriesName}（${items.length} 台）`)
-      for (const [i, l] of items.slice(0, 5).entries()) lines.push(listingLine(l, i))
-      if (items.length > 5) lines.push(`另有 ${items.length - 5} 台，见最新报表。`)
-    }
-    let picked = collectListings(latestData, status, null, true, 5)
-    if (picked.length < 5) {
-      const more = collectListings(latestData, status, null, false, 5)
-      for (const item of more) {
-        if (picked.length >= 5) break
-        if (!picked.some((x) => x.listing.detailUrl === item.listing.detailUrl)) picked.push(item)
-      }
-    }
-    const details = picked.map((x) => detailCard({ ...x, landingBase: status.dashboard?.url || '' }))
-    if (!total) {
-      lines.push('本轮没有新上架车源；下面是当前最低价 5 台。')
-      return sendQueryCards(service, status, summaryCard(status), details, `本轮无新上架，已发当前最低价 ${details.length} 台详情卡。`)
-    }
-    return sendQueryCards(service, status, latestCard(latestData), details, `已发新上架概览卡 + ${details.length} 张详情卡到群里。`)
+    return { text: '', card: latestCard(latestData, status) }
   }
 
   async function targetReply(targetId) {
@@ -445,29 +507,27 @@ ${question}`, card: null }
   }
 
   /** 按 AI 归一化后的关键词直接查，结果卡带样本/中位/最低。 */
-  async function queryByKeyword(keyword, name, status) {
+  async function queryByKeyword(keyword, name, status, { force = false } = {}) {
     if (!keyword) return '请补充具体车型（品牌+车系，例如 小米YU7）。'
     let result
     try {
-      result = await service.lookup(keyword, { name: name || keyword, enrich: false })
+      result = await service.lookup(keyword, { name: name || keyword, enrich: false, force })
     } catch (err) {
       log.warn?.('query %s failed: %s', keyword, err.message)
       return `查询「${name || keyword}」失败：${err.message}`
     }
     const sample = result?.agg?.sampleCount ?? 0
     if (!sample) return { text: `没搜到「${name || keyword}」的西安在售车源。可以换个说法，或直接发“品牌+车型”。`, noResults: true }
-    const url = queryPageUrl(status, keyword)
-    if (url) {
-      return {
-        text: '',
-        card: queryCard({
-          name: name || keyword,
-          desc: `${sample} 台 · 中位 ${wan(result.agg.price?.median)} · 最低 ${wan(result.agg.price?.min)}`,
-          url,
-        }),
-      }
+    return {
+      text: '',
+      card: queryCard({
+        name: name || keyword,
+        keyword,
+        desc: `${sample} 台 · 中位 ${wan(result.agg.price?.median)} · 最低 ${wan(result.agg.price?.min)}`,
+        url: queryPageUrl(status, keyword) || keywordUrl(keyword),
+        watched: status.targets.some((t) => normalize(t.keyword) === normalize(keyword)),
+      }),
     }
-    return lookup([{ id: slugTargetId(keyword), name: name || keyword, keyword }], status, name || keyword)
   }
 
   /** 不确定时先确认：给出候选编号，等用户选；选完再执行查询/加监控。 */
@@ -512,7 +572,7 @@ ${question}`, card: null }
     return addCandidates([{ id: slugTargetId(keyword), name, keyword, enabled: true }], key, status)
   }
 
-  async function routeByIntent(intent, status, key, raw) {
+  async function routeByIntent(intent, status, key, raw, context) {
     if (!intent) return null
     const type = intent.intent
     if (type === 'query') {
@@ -528,17 +588,14 @@ ${question}`, card: null }
     if (type === 'watch_remove') {
       const target = status.targets.find((t) => normalize(t.keyword) === normalize(intent.keyword) || normalize(t.name) === normalize(intent.name))
       if (!target) return `监控里没有「${intent.name || intent.keyword || '这个车型'}」。`
-      await service.removeTarget(target.id)
-      return `已取消监控：${target.name}`
+      const removed = await service.removeTarget(target.id)
+      return removed ? `已取消监控：${target.name}` : `未能取消「${target.name}」，请打开监控管理确认状态。`
     }
     if (type === 'latest') return latest()
     if (type === 'status') return summary()
     if (type === 'dashboard') return dashboardReply(status)
     if (type === 'help') return HELP
-    if (type === 'scan') {
-      service.scan('aibot').then((r) => log.info?.('aibot scan done: new=%d drop=%d', r.newListings ?? 0, r.priceDrops ?? 0)).catch((err) => log.warn?.('aibot scan failed: %s', err.message))
-      return '已触发扫描已监控车型，有新上架/降价会直接推卡片到群里。'
-    }
+    if (type === 'scan') return startScan(context)
     if (type === 'unknown') {
       if (intent.alternatives?.length || intent.question) return confirmChoice(intent, status, key, 'query')
       return null
@@ -547,7 +604,7 @@ ${question}`, card: null }
   }
 
   /** 主路由：先让 AI 分析意图；模型不可用/返回空才走确定性兜底。 */
-  async function routeWithAnalyzer(raw, status, key) {
+  async function routeWithAnalyzer(raw, status, key, context) {
     if (typeof analyzer !== 'function') return null
     let intent = null
     try {
@@ -555,7 +612,7 @@ ${question}`, card: null }
     } catch (err) {
       log.warn?.('analyzer failed: %s', err.message)
     }
-    return routeByIntent(intent, status, key, raw)
+    return routeByIntent(intent, status, key, raw, context)
   }
 
   async function addCandidates(candidates, key, status) {
@@ -565,7 +622,7 @@ ${question}`, card: null }
       lines.push(`已加入监控：${result.added.map((t) => t.name).join('、')}`)
       for (const t of result.added) {
         try {
-          await service.scan('aibot-add', { targetId: t.id })
+          await service.scan('aibot-add', { targetId: t.id, suppressNotify: true })
           const st = await service.status()
           const row = st.targets.find((x) => x.id === t.id)
           if (row) lines.push(`${t.name}：当前样本 ${row.sampleCount ?? 0} 台，中位 ${wan(row.medianPrice)}`)
@@ -608,7 +665,8 @@ ${question}`, card: null }
     return addCandidates(chosen, key, status)
   }
 
-  return async ({ text, chatid = '', from = '' }) => {
+  const handler = async (message) => {
+    const { text, chatid = '', from = '' } = message
     const raw = String(text ?? '').trim()
     const normalized = normalize(raw)
     const key = `${chatid || 'default'}:${from || 'unknown'}`
@@ -629,59 +687,44 @@ ${question}`, card: null }
           }
           return handleQueryConfirm(pending, normalized, key)
         }
-        // 用户说的是新问题：清掉旧确认，继续走正常路由
         await service.clearPendingEntry(key)
       }
       if (!pending.expired && isConfirmText(normalized)) {
         return handleConfirm(pending, normalized, key)
       }
-      // pending 过期、或用户直接发起了新问题：清掉旧询问，继续处理当前消息。
-      // 不能因为“上一个询问过期”就把用户的新查询吞掉。
       await service.clearPendingEntry(key)
     }
 
     if (/帮助|help|菜单|指令/.test(normalized)) return HELP
-
-    if (/看板|网页版|dashboard/.test(normalized)) {
-      return dashboardReply(await service.status())
-    }
-
-    if (/扫描|刷新|抓取|更新/.test(normalized)) {
-      service.scan('aibot').then((r) => {
-        log.info?.('aibot scan done: new=%d drop=%d', r.newListings ?? 0, r.priceDrops ?? 0)
-      }).catch((err) => log.warn?.('aibot scan failed: %s', err.message))
-      return '已触发扫描已监控车型，有新上架/降价会直接推卡片到群里。'
-    }
+    if (/看板|网页版|dashboard/.test(normalized)) return dashboardReply(await service.status())
+    if (/扫描|刷新|抓取|更新/.test(normalized)) return startScan(message)
 
     const status = await service.status()
-
-    // 精确的管理指令直接走，避免被模型误判；自然语言仍交给意图分析
     if (/^最新$|^新上架$|^新的$|^新增$/.test(normalized)) return latest()
     if (/^查$|^行情$|^状态$|^价格$|^报价$/.test(normalized)) return summary()
-
-    // 0) 先让模型分析用户意图；能确认的直接执行，不能确认的返回候选让用户确认
-    const routed = await routeWithAnalyzer(raw, status, key)
-    if (routed != null) return routed
-
-    // 1) 模型不可用/无法判断时的确定性兜底
-    // 已监控车型：精确匹配（避免“理想L9”被“理想i6”截走）
-    const configured = detectConfigured(normalized, status)
-    if (configured) {
-      const url = queryPageUrl(status, configured.keyword || configured.name)
-      if (url) {
-        return {
-          text: '',
-          card: queryCard({
-            name: configured.name,
-            desc: `${configured.sampleCount ?? 0} 台 · 中位 ${wan(configured.medianPrice)}`,
-            url,
-          }),
-        }
-      }
-      return targetReply(configured.id)
+    if (/^监控$|^监控管理$|^管理$/.test(normalized)) {
+      const current = await service.status()
+      return { text: '', card: monitorCard(current) }
     }
 
-    // 2) 任意品牌+车型：先规则解析；失败再用模型理解一次模糊说法
+    const routed = await routeWithAnalyzer(raw, status, key, message)
+    if (routed != null) return routed
+
+    const configured = detectConfigured(normalized, status)
+    if (configured) {
+      const keyword = configured.keyword || configured.name
+      return {
+        text: '',
+        card: queryCard({
+          name: configured.name,
+          keyword,
+          desc: `${configured.sampleCount ?? 0} 台 · 中位 ${wan(configured.medianPrice)}`,
+          url: queryPageUrl(status, keyword) || keywordUrl(keyword),
+          watched: true,
+        }),
+      }
+    }
+
     let resolved = null
     try {
       resolved = await resolveModels(raw)
@@ -691,31 +734,90 @@ ${question}`, card: null }
 
     if (resolved?.models?.length) {
       const first = resolved.models[0]
-      const url = queryPageUrl(status, first.keyword || first.name)
-      if (url) return { text: '', card: queryCard({ name: first.name, url }) }
-      return lookup(resolved.models, status, `${resolved.brand}${resolved.model}`.trim())
+      const keyword = first.keyword || first.name
+      return { text: '', card: queryCard({ name: first.name, keyword, url: queryPageUrl(status, keyword) || keywordUrl(keyword) }) }
     }
     if (resolved && !resolved.models.length) {
       if (!resolved.model) return `已识别品牌「${resolved.brand}」，请补充具体车型，例如“${resolved.brand}L9”。`
       return `没找到「${resolved.brand}${resolved.model}」这个具体车系，请换一个“品牌+车型”说法（例如“理想L9”“蔚来ES8”）。`
     }
 
-    // 3) 目录兜底（宋L 这类口语简称）
     const catalog = matchCatalog(normalized)
     if (catalog.length) {
       const first = catalog[0]
-      const url = queryPageUrl(status, first.keyword || first.name)
-      if (url) return { text: '', card: queryCard({ name: first.name, url }) }
-      return lookup(catalog, status, '宋L')
+      const keyword = first.keyword || first.name
+      return { text: '', card: queryCard({ name: first.name, keyword, url: queryPageUrl(status, keyword) || keywordUrl(keyword) }) }
     }
 
     if (/最新|新上架|新的|新增/.test(normalized)) return latest()
     if (/查|行情|状态|价格|报价/.test(normalized)) return summary()
-
-    if (/加入/.test(normalized)) {
-      return '先发“找宋L”看结果，我会再问你是否加入；或直接发车型名查询已监控车型。'
-    }
-
+    if (/加入/.test(normalized)) return '直接发“监控 品牌+车型”，或先查询再点“加入监控”。'
     return `没识别到「${raw.slice(0, 30)}」。\n${HELP}`
   }
+
+  function background(context, work) {
+    Promise.resolve().then(work).then(async (message) => {
+      if (message && pushMessage) await pushMessage(context, message)
+    }).catch((err) => log.warn?.('aibot background action failed: %s', err.message))
+  }
+
+  handler.handleEvent = async (context) => {
+    const decoded = decodeAction(context?.key)
+    if (!decoded) return { text: '', card: queryCard({ name: '操作已失效', desc: '请重新发送指令', watched: true }) }
+    const { action, payload } = decoded
+    if (action === 'monitor') {
+      return { text: '', card: monitorCard(await service.status()) }
+    }
+    if (action === 'monitor_toggle') {
+      if (!payload.id || typeof service.setTargetEnabled !== 'function') {
+        return { text: '', card: monitorCard(await service.status()) }
+      }
+      const status = await service.status()
+      const current = (status.allTargets ?? status.targets).find((t) => t.id === payload.id)
+      if (current) await service.setTargetEnabled(payload.id, current.enabled === false)
+      return { text: '', card: monitorCard(await service.status()) }
+    }
+    if (action === 'read') {
+      const data = await service.readLatest()
+      const status = await service.status()
+      return data ? { text: '', card: latestCard(data, status) } : { text: '还没有扫描结果，请先扫描。' }
+    }
+    if (action === 'scan') return startScan(context)
+    if (action === 'query_refresh') {
+      const keyword = String(payload.keyword || payload.name || '').slice(0, 40)
+      const name = String(payload.name || keyword).slice(0, 40)
+      background(context, async () => queryByKeyword(keyword, name, await service.status(), { force: true }))
+      return { text: '', card: queryCard({ name, keyword, desc: '正在刷新，完成后会在此会话通知你', watched: true }) }
+    }
+    if (action === 'watch_add') {
+      const keyword = String(payload.keyword || payload.name || '').trim().slice(0, 40)
+      const name = String(payload.name || keyword).trim().slice(0, 40)
+      if (!keyword) return { text: '缺少车型关键词，请重新查询。' }
+      const status = await service.status()
+      const existing = (status.allTargets ?? status.targets).find((t) => normalize(t.keyword) === normalize(keyword))
+      const result = await service.addTargets([{ id: existing?.id || slugTargetId(keyword), name, keyword, enabled: true }])
+      const added = result.added?.[0]
+      if (added) {
+        background(context, async () => {
+          const summary = await service.scan('aibot-add', { targetId: added.id, suppressNotify: true })
+          const current = await service.status()
+          const row = current.targets.find((t) => t.id === added.id)
+          return {
+            text: '',
+            card: queryCard({
+              name: added.name, keyword: added.keyword, watched: true,
+              desc: summary.busy ? '已加入监控；另一轮扫描正在进行' : `已加入｜样本 ${row?.sampleCount ?? 0} 台｜中位 ${wan(row?.medianPrice)}`,
+              url: queryPageUrl(current, added.keyword),
+            }),
+          }
+        })
+      }
+      const current = await service.status()
+      const url = queryPageUrl(current, keyword)
+      return { text: '', card: queryCard({ name, keyword, watched: true, url, desc: added ? '已加入，正在建立首次行情基线' : '已在监控中' }) }
+    }
+    return { text: '暂不支持这个操作，请发送“帮助”。' }
+  }
+
+  return handler
 }

@@ -15,6 +15,7 @@ import { createCommandHandler } from './src/commands.js'
 import { createLlmAnalyzer } from './src/llm-analyzer.js'
 import { REPORT_NAME } from './src/html-report.js'
 import { dashboardUrls, startDashboardServer } from './src/dashboard-server.js'
+import { ensureDashboardToken, withDashboardToken } from './src/dashboard-auth.js'
 import { startNamedTunnel, startQuickTunnel } from './src/dashboard-tunnel.js'
 
 export const name = 'vehicle-watch'
@@ -145,14 +146,23 @@ export function apply(ctx, config) {
   if (config.dashboard?.enabled !== false) {
     ctx.effect(async () => {
       let started
+      let dashboardToken
       try {
+        dashboardToken = await ensureDashboardToken(statePath)
         started = await startDashboardServer({
           filePath: path.join(reportDir, REPORT_NAME),
           jsonPath: path.join(reportDir, 'latest.json'),
           port: config.dashboard?.port ?? 47800,
           host: config.dashboard?.host || '0.0.0.0',
           log,
+          token: dashboardToken,
           queryHandler: (q) => service.lookup(q, { name: q }),
+          monitorHandler: {
+            status: async () => (await service.status()).allTargets,
+            addTargets: (targets) => service.addTargets(targets),
+            removeTarget: (id) => service.removeTarget(id),
+            setTargetEnabled: (id, enabled) => service.setTargetEnabled(id, enabled),
+          },
         })
       } catch (err) {
         log.warn('dashboard server failed: %s', err.message)
@@ -168,11 +178,15 @@ export function apply(ctx, config) {
       const publish = () => service.setDashboard({
         enabled: true,
         port: started.port,
-        url: stableUrl || tunnel?.url || urls.lan || urls.local,
-        publicUrl: stableUrl || tunnel?.url || null,
+        url: withDashboardToken(stableUrl || tunnel?.url || urls.lan || urls.local, dashboardToken),
+        publicUrl: withDashboardToken(stableUrl || tunnel?.url || null, dashboardToken),
         stable: Boolean(stableUrl),
         publicPending: !stableUrl && config.dashboard?.public !== false && !tunnel,
-        urls: { ...urls, public: stableUrl || tunnel?.url || null },
+        urls: {
+          local: withDashboardToken(urls.local, dashboardToken),
+          lan: withDashboardToken(urls.lan, dashboardToken),
+          public: withDashboardToken(stableUrl || tunnel?.url || null, dashboardToken),
+        },
       })
       publish()
       log.info('dashboard ready: %s (phone: %s)', urls.local, stableUrl || urls.lan || urls.local)
@@ -236,7 +250,10 @@ export function apply(ctx, config) {
       timeoutMs: config.llm?.timeoutMs,
       log,
     })
-    const handler = createCommandHandler({ service, log, analyzer })
+    const handler = createCommandHandler({
+      service, log, analyzer,
+      pushMessage: (context, message) => aibot.sendToChat(context, message),
+    })
     aibot = new AibotClient({
       botId: config.aibot.botId,
       secret: config.aibot.secret,
@@ -244,6 +261,7 @@ export function apply(ctx, config) {
       heartbeatMs: config.aibot.heartbeatMs,
       log,
       onText: (msg) => handler(msg),
+      onEvent: (event) => handler.handleEvent(event),
     })
     ctx.effect(() => {
       try { aibot.connect() } catch (err) { log.error('aibot connect failed: %s', err.message) }

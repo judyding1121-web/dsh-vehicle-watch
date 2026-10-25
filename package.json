@@ -54,7 +54,7 @@
     "ws": "^8.22.0"
   },
   "scripts": {
-    "test": "node scripts/selftest.mjs && node scripts/selftest-service.mjs",
+    "test": "node scripts/selftest.mjs && node scripts/selftest-service.mjs && node scripts/selftest-interaction.mjs && node scripts/selftest-dashboard.mjs",
     "check": "for f in index.js src/*.js scripts/*.mjs; do node --check \"$f\" || exit 1; done && echo 'syntax ok'"
   }
 }

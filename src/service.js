@@ -7,7 +7,7 @@ import { loadState, pruneSeen, saveState } from './state.js'
 import { buildMessages, formatWan, Notifier } from './notify.js'
 import { generateReport } from './report.js'
 import { REPORT_NAME, writeHtmlReport } from './html-report.js'
-import { addWatchTargets, clearPending, getPending, loadWatchlist, removeWatchTarget, setPending } from './runtime-store.js'
+import { addWatchTargets, clearPending, getPending, loadWatchState, removeWatchTarget, setPending } from './runtime-store.js'
 
 const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
@@ -60,15 +60,19 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     dashboard = info ?? { enabled: false }
   }
 
-  async function loadTargets() {
-    const base = (config.targets ?? []).filter((t) => t.enabled !== false)
-    const dynamic = await loadWatchlist(statePath)
-    const map = new Map(base.map((t) => [t.id, t]))
-    for (const t of dynamic) {
-      if (t.enabled !== false && !map.has(t.id)) map.set(t.id, t)
+  async function loadTargets({ includeDisabled = false } = {}) {
+    const watch = await loadWatchState(statePath)
+    const disabled = new Set(watch.disabledIds)
+    const map = new Map((config.targets ?? []).map((t) => [t.id, {
+      ...t, enabled: t.enabled !== false && !disabled.has(t.id),
+    }]))
+    for (const t of watch.targets) {
+      if (!map.has(t.id)) map.set(t.id, { ...t, enabled: t.enabled !== false && !disabled.has(t.id) })
     }
     // 兼容旧配置：没有 keyword 的目标用 name 当搜索词
-    return [...map.values()].map((t) => ({ ...t, keyword: t.keyword || t.name }))
+    return [...map.values()]
+      .filter((t) => includeDisabled || t.enabled)
+      .map((t) => ({ ...t, keyword: t.keyword || t.name }))
   }
 
   // 详情缓存：同一商品 10 分钟内不重复请求（扫描/查询/看板查询共用）
@@ -138,7 +142,7 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     return { rawCount, filtered, pageInfo }
   }
 
-  async function scan(trigger = 'timer', { targetId = null } = {}) {
+  async function scan(trigger = 'timer', { targetId = null, suppressNotify = false } = {}) {
     if (running) return { ok: false, busy: true, message: '上一轮扫描还没结束' }
     running = true
     const startedAt = localIso()
@@ -240,24 +244,38 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
         }
       }
 
-      const messages = buildMessages(results, {
+      const messages = suppressNotify ? [] : buildMessages(results, {
         cityName,
         maxPush: config.maxPushPerRun ?? 8,
         notifyOnFirstRun: config.notifyOnFirstRun !== false,
+        dashboardUrl: dashboard?.url || '',
       })
       const notifyResults = []
       for (const msg of messages) notifyResults.push({ targetId: msg.targetId, kind: msg.kind, result: await notifier.send(msg) })
 
-      const latestTargets = results.map((r) => ({
-        ...r.agg,
-        cityListings: undefined,
-        newListings: r.newListings,
-        priceDrops: r.priceDrops,
-        firstRun: r.firstRun,
-        status: r.status,
-        error: r.error,
-      }))
-      const allListings = results.flatMap((r) => r.agg.cityListings ?? [])
+      const scannedIds = new Set(results.map((r) => r.target.id))
+      const previous = await readLatest()
+      const latestTargets = [
+        ...(previous?.targets ?? []).filter((t) => !scannedIds.has(t.targetId)),
+        ...results.map((r) => ({
+          ...r.agg,
+          cityListings: undefined,
+          newListings: r.newListings,
+          priceDrops: r.priceDrops,
+          firstRun: r.firstRun,
+          status: r.status,
+          error: r.error,
+        })),
+      ]
+      const allListings = [
+        ...(previous?.listings ?? []).filter((l) => !scannedIds.has(l.targetId)),
+        ...results.flatMap((r) => r.agg.cityListings ?? []),
+      ]
+      const changes = results.flatMap((r) => [
+        ...r.newListings.map((listing) => ({ at: startedAt, type: 'new', targetId: r.target.id, seriesName: r.target.name, listing })),
+        ...r.priceDrops.map((drop) => ({ at: startedAt, type: 'drop', targetId: r.target.id, seriesName: r.target.name, oldPrice: drop.oldPrice, listing: drop.listing })),
+      ])
+      const historyFloor = Date.now() - 7 * 24 * 3600_000
       const latest = {
         generatedAt: startedAt,
         trigger,
@@ -265,6 +283,7 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
         city: cityName,
         targets: latestTargets,
         listings: allListings,
+        changes: [...(previous?.changes ?? []), ...changes].filter((c) => Date.parse(c.at) >= historyFloor).slice(-500),
       }
 
       await mkdir(reportDir, { recursive: true })
@@ -289,10 +308,12 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
       if (okTargets === 0) {
         summary.skippedOutput = true
         const reasons = results.map((r) => `${r.target.name}：${r.error || '扫描失败'}`).join('\n')
-        summary.alerted = await notifier.send({
-          text: `【闲鱼监控】本轮 ${results.length} 个车型全部扫描失败\n${reasons}\n\n上一份看板/报表保持不变；请检查网络、闲鱼风控或 Cookie 配置。`,
-        })
-        summary.messages += 1
+        if (!suppressNotify) {
+          summary.alerted = await notifier.send({
+            text: `【闲鱼监控】本轮 ${results.length} 个车型全部扫描失败\n${reasons}\n\n上一份看板/报表保持不变；请检查网络、闲鱼风控或 Cookie 配置。`,
+          })
+          summary.messages += 1
+        }
         await appendFile(path.join(reportDir, 'scan-log.jsonl'), JSON.stringify(summary) + '\n', 'utf8')
         state.lastRun = summary
         await saveState(statePath, state)
@@ -344,27 +365,60 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     }
   }
 
-  /** 临时查询一个关键词（不写入监控状态），给机器人双向指令用。 */
-  async function lookup(keyword, { name = keyword, enrich = true } = {}) {
-    const res = await xianyu.search(keyword, 1, { province, city: cityName })
-    const listings = filterListings(res.listings, { keyword, cityName, minPriceYuan, excludeKeywords, carCategoryId })
-    const agg = aggregateListings({
-      target: { id: keyword, name, keyword },
-      listings,
-      rawCount: res.rawCount,
-      pageInfo: res.pageInfo,
-      cityName,
-    })
-    // 查询结果先按价格排序，再给最便宜的 Top N 补详情（页面默认也按价格排）
-    if (enrich && enrichDetails && queryEnrichMax > 0) {
-      const cheapest = [...agg.cityListings].sort((a, b) => Number(a.priceYuan) - Number(b.priceYuan))
-      await enrichListings(cheapest, { median: agg.price?.median, max: queryEnrichMax })
+  const queryCache = new Map()
+  const QUERY_TTL_MS = 5 * 60_000
+
+  /** 同一关键词 5 分钟复用结果；并发查询共享 Promise，刷新可显式绕过缓存。 */
+  async function lookup(keyword, { name = keyword, enrich = true, force = false } = {}) {
+    const cleanKeyword = String(keyword ?? '').trim()
+    if (!cleanKeyword || cleanKeyword.length > 40) throw new Error('车型关键词不能为空且不能超过 40 字')
+    const key = cleanKeyword.toLowerCase()
+    const hit = queryCache.get(key)
+    if (!force && hit && Date.now() - hit.at < QUERY_TTL_MS) return hit.promise
+    const promise = (async () => {
+      const res = await xianyu.search(cleanKeyword, 1, { province, city: cityName })
+      const listings = filterListings(res.listings, { keyword: cleanKeyword, cityName, minPriceYuan, excludeKeywords, carCategoryId })
+      const agg = aggregateListings({
+        target: { id: cleanKeyword, name, keyword: cleanKeyword },
+        listings,
+        rawCount: res.rawCount,
+        pageInfo: res.pageInfo,
+        cityName,
+      })
+      if (enrich && enrichDetails && queryEnrichMax > 0) {
+        const cheapest = [...agg.cityListings].sort((a, b) => Number(a.priceYuan) - Number(b.priceYuan))
+        await enrichListings(cheapest, { median: agg.price?.median, max: queryEnrichMax })
+      }
+      return { agg, listings: agg.cityListings, keyword: cleanKeyword, cachedAt: new Date().toISOString() }
+    })()
+    queryCache.set(key, { at: Date.now(), promise })
+    try {
+      return await promise
+    } catch (err) {
+      if (queryCache.get(key)?.promise === promise) queryCache.delete(key)
+      throw err
     }
-    return { agg, listings: agg.cityListings, keyword }
   }
 
   async function status() {
     const state = await loadState(statePath)
+    const allTargets = (await loadTargets({ includeDisabled: true })).map((t) => {
+      const s = state.targets?.[t.id]
+      const last = s?.last
+      return {
+        id: t.id,
+        name: t.name,
+        keyword: t.keyword,
+        url: searchUrl(t.keyword),
+        enabled: t.enabled !== false,
+        initialized: Boolean(s?.initialized),
+        lastScanAt: s?.lastScanAt ?? null,
+        sampleCount: last?.sampleCount ?? null,
+        medianPrice: last?.price?.median ?? null,
+        medianPriceWan: last?.price?.median != null ? (last.price.median / 10000).toFixed(2) : null,
+        seenCount: s?.seen ? Object.keys(s.seen).length : 0,
+      }
+    })
     return {
       source: 'xianyu',
       dashboard,
@@ -373,23 +427,8 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
       htmlPath: path.join(reportDir, REPORT_NAME),
       htmlEnabled: config.report?.html !== false,
       webhooks: { wecom: Boolean(config.notify?.wecomWebhook), feishu: Boolean(config.notify?.feishuWebhook) },
-      targets: (await loadTargets()).map((t) => {
-        const s = state.targets?.[t.id]
-        const last = s?.last
-        return {
-          id: t.id,
-          name: t.name,
-          keyword: t.keyword,
-          url: searchUrl(t.keyword),
-          enabled: t.enabled !== false,
-          initialized: Boolean(s?.initialized),
-          lastScanAt: s?.lastScanAt ?? null,
-          sampleCount: last?.sampleCount ?? null,
-          medianPrice: last?.price?.median ?? null,
-          medianPriceWan: last?.price?.median != null ? (last.price.median / 10000).toFixed(2) : null,
-          seenCount: s?.seen ? Object.keys(s.seen).length : 0,
-        }
-      }),
+      targets: allTargets.filter((t) => t.enabled),
+      allTargets,
       lastRun: state.lastRun ?? null,
     }
   }
@@ -432,7 +471,17 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
   }
 
   async function removeTarget(id) {
-    return removeWatchTarget(statePath, id)
+    return removeWatchTarget(statePath, id, config.targets ?? [])
+  }
+
+  async function setTargetEnabled(id, enabled) {
+    const target = (await loadTargets({ includeDisabled: true })).find((t) => t.id === id)
+    if (!target) return false
+    if (enabled) {
+      const result = await addWatchTargets(statePath, [{ ...target, enabled: true }], config.targets ?? [])
+      return result.added.length > 0 || target.enabled === false
+    }
+    return removeWatchTarget(statePath, id, config.targets ?? [])
   }
 
   async function pending(key) {
@@ -454,7 +503,7 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     return results
   }
 
-  return { scan, lookup, status, generateNow, readLatest, sendCards, loadTargets, addTargets, removeTarget, pending, setPendingEntry, clearPendingEntry, setDashboard }
+  return { scan, lookup, status, generateNow, readLatest, sendCards, loadTargets, addTargets, removeTarget, setTargetEnabled, pending, setPendingEntry, clearPendingEntry, setDashboard }
 }
 
 function toAggCsv(targets) {

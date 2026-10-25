@@ -138,7 +138,8 @@ function makeLatest(target, keyword = target.name) {
     targets: [{
       targetId: target.id, seriesName: target.name, keyword, url: searchUrl(keyword),
       price: { min: 180000, median: 182500 }, sampleCount: listings.length,
-      newListings: listings.slice(0, 3), priceDrops: [],
+      newListings: listings.slice(0, 3),
+      priceDrops: [{ listing: listings[4], oldPrice: 190000, newPrice: listings[4].priceYuan }],
     }],
     listings,
   }
@@ -194,22 +195,24 @@ await test('已监控小米SU7：也返回一张结果卡（不堆文字）', as
   assert.ok(decodeURIComponent(reply.card.card_action.url).includes('小米SU7'))
 })
 
-await test('查行情：1 汇总卡 + 5 详情卡', async () => {
+await test('查行情：只返回 1 张汇总卡，不向 Webhook 补发详情', async () => {
   const service = makeService({ targets: [SU7], latest: makeLatest(SU7) })
   const handler = createCommandHandler({ service, log: console })
   const reply = await handler({ text: '查', chatid: 'g4', from: 'u4' })
-  assert.equal(service.sentCards.length, 6, '应发 1 概览 + 5 详情')
-  assert.ok(service.sentCards[0].main_title.title.includes('行情'))
-  assert.ok(String(reply.text).includes('5 张详情卡'))
+  assert.equal(service.sentCards.length, 0)
+  assert.equal(reply.card.card_type, 'button_interaction')
+  assert.ok(reply.card.main_title.title.includes('行情'))
+  assert.ok(reply.card.button_list.length <= 6)
 })
 
-await test('最新：1 概览 + 5 详情卡', async () => {
+await test('最新：一张卡同时包含新上架与降价', async () => {
   const service = makeService({ targets: [SU7], latest: makeLatest(SU7) })
   const handler = createCommandHandler({ service, log: console })
   const reply = await handler({ text: '最新', chatid: 'g5', from: 'u5' })
-  assert.equal(service.sentCards.length, 6, '应发 1 概览 + 5 详情')
-  assert.ok(service.sentCards[0].main_title.title.includes('新上架'))
-  assert.ok(String(reply.text).includes('5 张详情卡'))
+  assert.equal(service.sentCards.length, 0)
+  assert.equal(reply.card.card_type, 'button_interaction')
+  assert.ok(reply.card.main_title.title.includes('最新变化'))
+  assert.ok(reply.card.sub_title_text.includes('降价'))
 })
 
 await test('AI 意图解析器：能解析 JSON、拒绝坏输出', async () => {

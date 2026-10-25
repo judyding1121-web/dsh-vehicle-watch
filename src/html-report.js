@@ -10,6 +10,7 @@
  */
 import { readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { DASHBOARD_STYLE, dashboardScript } from './dashboard-ui.js'
 
 const REPORT_NAME = '二手车监控-最新.html'
 
@@ -152,7 +153,7 @@ function newSection(targets, now) {
     .filter((g) => g.items.length)
   const total = groups.reduce((n, g) => n + g.items.length, 0)
   if (!total) return ''
-  return `<section class="card">
+  return `<section class="card change-new">
     <div class="section-head"><h2><span class="dot green"></span>新上架 <em>${total} 台</em></h2><span class="hint">本轮首次出现 · 对比该车型本轮中位价</span></div>
     ${groups.map((g) => modelGroup(g.t.seriesName, g.items)).join('')}
   </section>`
@@ -167,7 +168,7 @@ function dropSection(targets, now) {
     .filter((g) => g.items.length)
   const total = groups.reduce((n, g) => n + g.items.length, 0)
   if (!total) return ''
-  return `<section class="card">
+  return `<section class="card change-drop">
     <div class="section-head"><h2><span class="dot red"></span>降价 <em>${total} 台</em></h2><span class="hint">较上一轮降幅 ≥ 阈值</span></div>
     ${groups.map((g) => modelGroup(g.t.seriesName, g.items)).join('')}
   </section>`
@@ -396,13 +397,15 @@ export function renderHtmlReport({ latest, intervalHours = 2, title = '西安二
 
   const body = [
     renderHero(latest, targets, intervalHours),
+    `<div class="toolbar"><div class="seg"><button class="control active" data-kind="all">全部</button><button class="control" data-kind="new">新上架</button><button class="control" data-kind="drop">降价</button></div><div class="seg"><button class="control active" data-range="24">24 小时</button><button class="control" data-range="168">7 天</button></div><button class="control" id="refresh">刷新数据</button></div>`,
     newSection(targets, now),
     dropSection(targets, now),
     emptyState(hasChanges, baseline),
+    `<section class="card"><h3>变化记录</h3><div id="history-list"></div></section>`,
     `<section class="card"><h3>各车型行情（本轮样本）</h3>${statsTable(targets)}</section>`,
     sampleDetails(targets, now),
-    `<div class="foot">数据为闲鱼卖家报价，仅供参考。</div>`,
   ].filter(Boolean).join('\n')
+  const options = targets.map((t) => `<option value="${esc(t.targetId)}">${esc(t.seriesName)}</option>`).join('')
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -411,13 +414,18 @@ export function renderHtmlReport({ latest, intervalHours = 2, title = '西安二
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
 <title>${esc(title)} · ${esc(fmtDateTime(latest.generatedAt))}</title>
-<style>${STYLE}</style>
+<style>${STYLE}${DASHBOARD_STYLE}</style>
 </head>
 <body>
 <div class="wrap">
-${body}
+<nav class="tabs" aria-label="看板视图"><button class="tab active" data-view="activity">动态</button><button class="tab" data-view="listings">全部车源</button><button class="tab" data-view="monitors">监控</button></nav>
+<section id="view-activity" class="view">${body}</section>
+<section id="view-listings" class="view" hidden><div class="top"><h1>全部车源</h1><div class="sub">按车型、价格、里程筛选本轮有效样本</div></div><div class="card"><div class="toolbar"><select id="filter-model"><option value="">全部车型</option>${options}</select><select id="filter-price"><option value="">不限价格</option><option value="150000">15 万以内</option><option value="200000">20 万以内</option><option value="300000">30 万以内</option></select><select id="filter-km"><option value="">不限里程</option><option value="10000">1 万 km 内</option><option value="50000">5 万 km 内</option><option value="100000">10 万 km 内</option></select><select id="filter-sort"><option value="priceAsc">价格从低到高</option><option value="priceDesc">价格从高到低</option><option value="mileage">里程从低到高</option></select></div><div class="list-meta" id="listing-count"></div><ul class="items" id="listing-grid"></ul></div></section>
+<section id="view-monitors" class="view" hidden><div class="top"><h1>监控管理</h1><div class="sub">开关立即保存；新增车型从下一轮开始自动扫描</div></div><div class="card"><div id="monitor-list"><div class="empty-block">正在读取监控清单…</div></div><form class="add-form" id="add-monitor"><input id="add-name" maxlength="40" required placeholder="显示名，如 理想L9"><input id="add-keyword" maxlength="40" required placeholder="闲鱼关键词，如 理想L9"><button class="primary" type="submit">加入监控</button></form></div></section>
+<div id="notice" class="notice" role="status"></div><div class="foot">数据为闲鱼卖家报价，仅供参考。</div>
 </div>
 <script>${CLICK_JS}</script>
+<script>${dashboardScript(latest)}</script>
 </body>
 </html>
 `
@@ -461,6 +469,11 @@ export function renderQueryPage({ keyword = '', city = '西安', agg = {}, listi
 </body>
 </html>
 `
+}
+
+export function renderQueryErrorPage({ keyword = '', message = '' } = {}) {
+  const search = `https://www.goofish.com/search?q=${encodeURIComponent(keyword)}`
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>查询暂时失败</title><style>${STYLE}</style></head><body><div class="wrap"><section class="card empty"><h1>查询暂时失败</h1><p>${esc(message || '闲鱼暂时没有响应，请稍后重试。')}</p><p><button class="btn" onclick="location.reload()">重新查询</button></p><p><a href="${safeUrl(search)}" target="_blank" rel="noopener">改为打开闲鱼搜索「${esc(keyword)}」</a></p></section></div></body></html>`
 }
 
 /** 从 latest.json 生成并写入 HTML；返回输出路径。 */

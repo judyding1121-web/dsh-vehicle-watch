@@ -105,7 +105,7 @@ export class AibotClient {
     })
   }
 
-  handleFrame(frame) {
+  async handleFrame(frame) {
     const cmd = frame?.cmd
     const req = frame?.headers?.req_id ?? ''
 
@@ -132,9 +132,7 @@ export class AibotClient {
       return
     }
 
-    if (cmd === 'aibot_msg_callback') {
-      this.received += 1
-      this.lastMessageAt = new Date().toISOString()
+    if (cmd === 'aibot_msg_callback' || cmd === 'aibot_event_callback') {
       const body = frame.body ?? {}
       const msgId = body.msgid ?? req
       if (this.seenMsgIds.has(msgId)) return
@@ -143,12 +141,33 @@ export class AibotClient {
         const first = this.seenMsgIds.values().next().value
         this.seenMsgIds.delete(first)
       }
-      this.handleMessage(frame, body)
-      return
+      if (cmd === 'aibot_msg_callback') {
+        this.received += 1
+        this.lastMessageAt = new Date().toISOString()
+        await this.handleMessage(frame, body)
+      } else {
+        await this.handleEvent(frame, body)
+      }
     }
+  }
 
-    if (cmd === 'aibot_event_callback') {
-      this.onEvent?.(frame)
+  async handleEvent(frame, body = frame?.body ?? {}) {
+    const event = body?.event ?? {}
+    const key = event.eventkey ?? event.event_key ?? event.key ?? event.button?.key ?? event.button_key ?? event.EventKey ?? ''
+    const from = body?.from?.userid ?? ''
+    const chatid = body?.chatid ?? ''
+    try {
+      const reply = this.onEvent
+        ? await this.onEvent({ key, event, body, frame, from, chatid, chattype: body?.chattype ?? '' })
+        : null
+      if (reply?.card) {
+        this.lastReply = '[card event] ' + String(reply.text ?? '').slice(0, 1800)
+        this.updateCard(frame, reply.card)
+        this.replied += 1
+      }
+    } catch (err) {
+      this.lastError = err?.message ?? String(err)
+      this.log.error?.('aibot handle event failed: %s', this.lastError)
     }
   }
 
@@ -203,6 +222,40 @@ export class AibotClient {
           finish: true,
           content: String(content).slice(0, 20000),
         },
+      },
+    })
+  }
+
+  /** 模板卡片按钮事件的原卡更新，需在事件回调后 5 秒内发送。 */
+  updateCard(frame, card) {
+    const req = frame?.headers?.req_id
+    if (!req) return false
+    return this.send({
+      cmd: 'aibot_respond_update_msg',
+      headers: { req_id: req },
+      body: { response_type: 'update_template_card', template_card: card },
+    })
+  }
+
+  /** 异步任务完成后，向原群聊或单聊主动推送卡片/Markdown。 */
+  async sendToChat(context, message) {
+    const body = context?.body ?? {}
+    const group = (context?.chattype ?? body?.chattype) === 'group' || Boolean(context?.chatid ?? body?.chatid)
+    const chatid = group
+      ? (context?.chatid ?? body?.chatid ?? '')
+      : (body?.from?.userid ?? context?.from?.userid ?? context?.from ?? '')
+    if (!chatid) return false
+    const card = typeof message === 'object' ? message?.card : null
+    const content = typeof message === 'string' ? message : (message?.text ?? '')
+    return this.send({
+      cmd: 'aibot_send_msg',
+      headers: { req_id: reqId('send') },
+      body: {
+        chatid,
+        chat_type: group ? 2 : 1,
+        ...(card
+          ? { msgtype: 'template_card', template_card: card }
+          : { msgtype: 'markdown', markdown: { content: String(content).slice(0, 4000) } }),
       },
     })
   }

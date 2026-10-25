@@ -8,7 +8,8 @@
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import os from 'node:os'
-import { renderQueryPage } from './html-report.js'
+import { renderQueryErrorPage, renderQueryPage } from './html-report.js'
+import { targetIdForKeyword, validDashboardToken } from './dashboard-auth.js'
 
 /** 当前机器的局域网 IPv4 地址（优先 en0/Ethernet，跳过回环与自分配地址）。 */
 export function lanAddresses() {
@@ -93,66 +94,99 @@ p{color:#4b5563;font-size:14px;margin:8px 0}
 </body></html>`
 }
 
-export async function startDashboardServer({ filePath, jsonPath, port = 47800, host = '0.0.0.0', log = console, queryHandler = null } = {}) {
+export async function startDashboardServer({
+  filePath, jsonPath, port = 47800, host = '0.0.0.0', log = console,
+  queryHandler = null, monitorHandler = null, token = '',
+} = {}) {
   let server
   let boundPort = Number.isFinite(Number(port)) ? Number(port) : 47800
+
+  function send(res, status, body, type = 'application/json; charset=utf-8') {
+    res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+    res.end(type.startsWith('application/json') ? JSON.stringify(body) : body)
+  }
+
+  async function readJson(req) {
+    let raw = ''
+    for await (const chunk of req) {
+      raw += chunk
+      if (raw.length > 8192) throw new Error('请求内容过大')
+    }
+    return JSON.parse(raw || '{}')
+  }
 
   const handler = async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost')
       const pathname = decodeURIComponent(url.pathname)
+      const supplied = url.searchParams.get('token') || String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')
+      if (!validDashboardToken(supplied, token)) {
+        send(res, 401, { error: '看板链接已失效，请在企业微信重新发送“看板”' })
+        return
+      }
       if (pathname === '/' || pathname === '/index.html' || pathname === '/dashboard') {
-        const html = await readFile(filePath, 'utf8')
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-        res.end(html)
+        send(res, 200, await readFile(filePath, 'utf8'), 'text/html; charset=utf-8')
         return
       }
       if (pathname === '/go') {
         const id = String(url.searchParams.get('id') ?? '')
-        if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
-          res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
-          res.end('missing/invalid id')
-          return
-        }
-        const webUrl = `https://www.goofish.com/item?id=${encodeURIComponent(id)}`
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-        res.end(landingPage(id, webUrl))
+        if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return send(res, 400, { error: 'missing/invalid id' })
+        send(res, 200, landingPage(id, `https://www.goofish.com/item?id=${encodeURIComponent(id)}`), 'text/html; charset=utf-8')
         return
       }
       if (pathname === '/query') {
         const q = String(url.searchParams.get('q') ?? '').trim()
-        if (!q || q.length > 40) {
-          res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
-          res.end('missing/invalid q')
-          return
-        }
-        if (typeof queryHandler !== 'function') {
-          res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' })
-          res.end('查询服务未启动')
-          return
-        }
+        if (!q || q.length > 40) return send(res, 400, { error: 'missing/invalid q' })
+        if (typeof queryHandler !== 'function') return send(res, 503, { error: '查询服务未启动' })
         try {
           const result = await queryHandler(q)
-          const html = renderQueryPage({ keyword: q, agg: result?.agg ?? {}, listings: result?.listings ?? [], now: Date.now() })
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-          res.end(html)
+          send(res, 200, renderQueryPage({ keyword: q, agg: result?.agg ?? {}, listings: result?.listings ?? [], now: Date.now() }), 'text/html; charset=utf-8')
         } catch (err) {
-          res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
-          res.end(`查询失败：${err?.message ?? err}`)
+          send(res, 502, renderQueryErrorPage({ keyword: q, message: err?.message ?? String(err) }), 'text/html; charset=utf-8')
         }
         return
       }
       if (pathname === '/latest.json') {
-        const json = await readFile(jsonPath)
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-        res.end(json)
+        res.end(await readFile(jsonPath))
         return
       }
-      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-      res.end('404')
+      if (pathname === '/api/dashboard' && req.method === 'GET') {
+        let latest = null
+        try { latest = JSON.parse(await readFile(jsonPath, 'utf8')) } catch { /* 尚未首扫 */ }
+        send(res, 200, { latest, monitors: monitorHandler ? await monitorHandler.status() : [] })
+        return
+      }
+      if (pathname === '/api/monitor' && req.method === 'POST') {
+        if (!monitorHandler) return send(res, 503, { error: '监控服务未启动' })
+        let body
+        try { body = await readJson(req) } catch { return send(res, 400, { error: '请求 JSON 无效' }) }
+        const action = body?.action
+        if (!['add', 'remove', 'toggle'].includes(action)) return send(res, 400, { error: 'action 仅支持 add/remove/toggle' })
+        if (action === 'add') {
+          const name = String(body.name ?? '').trim()
+          const keyword = String(body.keyword ?? '').trim()
+          if (!name || !keyword || name.length > 40 || keyword.length > 40) return send(res, 400, { error: '车型名和关键词必填，且不能超过 40 字' })
+          const result = await monitorHandler.addTargets([{ id: targetIdForKeyword(keyword), name, keyword, enabled: true }])
+          return send(res, 200, { ok: true, result, monitors: await monitorHandler.status() })
+        }
+        const id = String(body.id ?? '')
+        if (!/^[A-Za-z0-9_-]{1,80}$/.test(id)) return send(res, 400, { error: '车型 ID 无效' })
+        if (action === 'toggle') {
+          const targets = await monitorHandler.status()
+          const target = targets.find((t) => t.id === id)
+          if (!target) return send(res, 404, { error: '车型不存在' })
+          const enabled = typeof body.enabled === 'boolean' ? body.enabled : target.enabled === false
+          if (body.enabled != null && typeof body.enabled !== 'boolean') return send(res, 400, { error: 'enabled 必须是布尔值' })
+          const changed = await monitorHandler.setTargetEnabled(id, enabled)
+          return send(res, changed ? 200 : 409, changed ? { ok: true, monitors: await monitorHandler.status() } : { error: '状态未改变' })
+        }
+        const removed = await monitorHandler.removeTarget(id)
+        return send(res, removed ? 200 : 404, removed ? { ok: true, monitors: await monitorHandler.status() } : { error: '车型不存在或已移除' })
+      }
+      send(res, 404, { error: '404' })
     } catch (err) {
-      res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' })
-      res.end(`看板还没生成（下一轮扫描后自动出现）：${err.message}`)
+      send(res, 503, { error: `看板暂不可用：${err.message}` })
     }
   }
 

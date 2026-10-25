@@ -25,16 +25,30 @@ async function writeJson(file, value) {
   await rename(tmp, file)
 }
 
-export async function loadWatchlist(statePath) {
-  const data = await readJson(storePaths(statePath).watchlist, null)
-  return Array.isArray(data?.targets) ? data.targets : []
+function normalizeWatchData(data) {
+  return {
+    ...data,
+    version: 2,
+    targets: Array.isArray(data?.targets) ? data.targets : [],
+    disabledIds: [...new Set(Array.isArray(data?.disabledIds) ? data.disabledIds : [])],
+  }
 }
 
-/** 动态监控清单：不改 config、不重启插件，下一次扫描立即生效。 */
+export async function loadWatchState(statePath) {
+  const data = await readJson(storePaths(statePath).watchlist, null)
+  return normalizeWatchData(data ?? { targets: [], disabledIds: [] })
+}
+
+export async function loadWatchlist(statePath) {
+  return (await loadWatchState(statePath)).targets
+}
+
+/** 动态监控清单与默认车型禁用状态：不改 config，下一次扫描立即生效。 */
 export async function addWatchTargets(statePath, candidates, configTargets = []) {
   const file = storePaths(statePath).watchlist
-  const data = await readJson(file, { version: 1, targets: [] })
-  if (!Array.isArray(data.targets)) data.targets = []
+  const data = normalizeWatchData(await readJson(file, { targets: [], disabledIds: [] }))
+  const disabled = new Set(data.disabledIds)
+  const configured = new Map(configTargets.map((t) => [t.id, t]))
   const existing = new Set([...configTargets.map((t) => t.id), ...data.targets.map((t) => t.id)])
   const added = []
   const skipped = []
@@ -42,6 +56,12 @@ export async function addWatchTargets(statePath, candidates, configTargets = [])
   for (const c of candidates) {
     const keyword = c?.keyword || c?.usedCarUrl || ''
     if (!c?.id || !keyword) { skipped.push(c); continue }
+    if (disabled.has(c.id) && configured.has(c.id)) {
+      disabled.delete(c.id)
+      const restored = { ...configured.get(c.id), enabled: true }
+      added.push(restored)
+      continue
+    }
     if (existing.has(c.id)) { skipped.push(c); continue }
     const target = {
       id: c.id,
@@ -57,20 +77,25 @@ export async function addWatchTargets(statePath, candidates, configTargets = [])
     existing.add(target.id)
     added.push(target)
   }
-  data.version = 1
+  data.disabledIds = [...disabled]
   data.updatedAt = now
   await writeJson(file, data)
   return { added, skipped }
 }
 
-export async function removeWatchTarget(statePath, id) {
+export async function removeWatchTarget(statePath, id, configTargets = []) {
   const file = storePaths(statePath).watchlist
-  const data = await readJson(file, { version: 1, targets: [] })
-  const before = Array.isArray(data.targets) ? data.targets.length : 0
-  data.targets = (data.targets ?? []).filter((t) => t.id !== id)
+  const data = normalizeWatchData(await readJson(file, { targets: [], disabledIds: [] }))
+  const before = data.targets.length
+  data.targets = data.targets.filter((t) => t.id !== id)
+  let changed = before !== data.targets.length
+  if (configTargets.some((t) => t.id === id) && !data.disabledIds.includes(id)) {
+    data.disabledIds.push(id)
+    changed = true
+  }
   data.updatedAt = new Date().toISOString()
   await writeJson(file, data)
-  return before !== data.targets.length
+  return changed
 }
 
 /** 会话状态：同一个群/用户 15 分钟内有效。 */
