@@ -118,6 +118,8 @@ function buildModels(brand, model) {
 export async function resolveModels(rawQuery) {
   const query = cleanQuery(rawQuery)
   if (!query) return null
+
+
   const hit = matchBrand(query)
   if (!hit) return null
   const model = extractModel(query, hit.alias, hit.index)

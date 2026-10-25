@@ -25,6 +25,12 @@ function shortTime(iso) {
   return iso ? String(iso).slice(0, 16).replace('T', ' ') : '—'
 }
 
+function slugTargetId(keyword) {
+  const ascii = String(keyword).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  const hex = Buffer.from(String(keyword), 'utf8').toString('hex').slice(0, 12)
+  return `w-${ascii ? `${ascii}-` : ''}${hex}`
+}
+
 function keywordUrl(keyword) {
   return `https://www.goofish.com/search?q=${encodeURIComponent(keyword)}`
 }
@@ -85,8 +91,17 @@ function lookupCard(items, todo, title = '西安二手车') {
   }
 }
 
-function detailCard({ candidate, listing }) {
-  const url = listing.detailUrl || candidate?.usedCarUrl || candidate?.url || GOOFISH_HOME
+/** 把商品详情 URL 换成看板服务器的 /go 落地页：在浏览器里会尝试唤起闲鱼 App。 */
+function landingUrl(itemUrl, base) {
+  if (!base) return itemUrl
+  const m = String(itemUrl ?? '').match(/[?&]id=([A-Za-z0-9_-]+)/)
+  if (!m) return itemUrl
+  try { return new URL(`go?id=${m[1]}`, base).href } catch { return itemUrl }
+}
+
+function detailCard({ candidate, listing, landingBase = '' }) {
+  const rawUrl = listing.detailUrl || candidate?.usedCarUrl || candidate?.url || GOOFISH_HOME
+  const url = landingUrl(rawUrl, landingBase)
   const title = listing.title || [listing.modelYear ? `${listing.modelYear}款` : null, listing.trim].filter(Boolean).join(' ')
   const area = listing.area || '西安'
   const want = listing.wantCount != null ? `${listing.wantCount}人想要` : null
@@ -168,6 +183,26 @@ async function sendQueryCards(service, status, overviewCard, details, text) {
     }
   }
   return { text, card: overviewCard }
+}
+
+/** 单次查询结果卡：整张卡点开就是一个干净的车源卡片列表页。 */
+function queryCard({ name, desc = '西安 · 闲鱼在售', url }) {
+  return {
+    card_type: 'text_notice',
+    source: { desc: '闲鱼 · 实时查询', desc_color: 0 },
+    main_title: { title: clip(name, 26), desc: clip(desc, 30) },
+    emphasis_content: { title: '查看', desc: '在售车源' },
+    sub_title_text: '',
+    jump_list: [{ type: 1, title: '查看车源', url }],
+    card_action: { type: 1, url },
+  }
+}
+
+/** 查询结果页地址（看板服务提供 /query）。 */
+function queryPageUrl(status, keyword) {
+  const base = status?.dashboard?.url
+  if (!base || !keyword) return null
+  try { return new URL(`query?q=${encodeURIComponent(keyword)}`, base).href } catch { return null }
 }
 
 function summaryCard(status) {
@@ -264,7 +299,7 @@ export function createCommandHandler({ service, log = console, analyzer = null }
     }
     lines.push('', '回复车型名看最低价车源，回复“最新”看新增，回复“找宋L”查车源。')
     const picked = collectListings(latestData, status, null, false, 5)
-    const details = picked.map(detailCard)
+    const details = picked.map((x) => detailCard({ ...x, landingBase: status.dashboard?.url || '' }))
     return sendQueryCards(service, status, summaryCard(status), details, `已发概览卡 + ${details.length} 张详情卡到群里。`)
   }
 
@@ -290,7 +325,7 @@ export function createCommandHandler({ service, log = console, analyzer = null }
         if (!picked.some((x) => x.listing.detailUrl === item.listing.detailUrl)) picked.push(item)
       }
     }
-    const details = picked.map(detailCard)
+    const details = picked.map((x) => detailCard({ ...x, landingBase: status.dashboard?.url || '' }))
     if (!total) {
       lines.push('本轮没有新上架车源；下面是当前最低价 5 台。')
       return sendQueryCards(service, status, summaryCard(status), details, `本轮无新上架，已发当前最低价 ${details.length} 台详情卡。`)
@@ -319,7 +354,7 @@ export function createCommandHandler({ service, log = console, analyzer = null }
     for (const [i, l] of listings.entries()) lines.push(listingLine(l, i))
     const lt = latestData?.targets?.find((x) => x.targetId === targetId)
     const picked = collectListings(latestData, status, targetId, false, 5)
-    const details = picked.map(detailCard)
+    const details = picked.map((x) => detailCard({ ...x, landingBase: status.dashboard?.url || '' }))
     if (details.length) {
       return sendQueryCards(service, status, targetCard(target, listings, lt), details, `已发${target.name}概览卡 + ${details.length} 张详情卡到群里。`)
     }
@@ -337,7 +372,7 @@ export function createCommandHandler({ service, log = console, analyzer = null }
       }
       return lines.join('\n')
     }
-    const lines = ['【闲鱼二手车 · 实时查询】', '说明：临时抓取闲鱼搜索结果，结果仅供本次查询。', '']
+    const lines = ['【闲鱼二手车 · 实时查询】', '说明：临时抓取闲鱼搜索结果；卡片会经落地页尝试打开闲鱼 App（企微内需先在浏览器打开）。', '']
     const items = []
     let failed = 0
     for (const c of todo) {
@@ -377,7 +412,7 @@ export function createCommandHandler({ service, log = console, analyzer = null }
       : `要加入长期监控吗？回复：${todo.map((c, i) => `${i + 1} ${c.name}`).join(' / ')} / ${todo.length + 1} 都不加`)
     const text = lines.join('\n')
     const card = lookupCard(items, todo, title)
-    const detailCards = pickDetailCards(items, 5).map(detailCard)
+    const detailCards = pickDetailCards(items, 5).map((x) => detailCard({ ...x, landingBase: status.dashboard?.url || '' }))
     const question = todo.length === 1
       ? '要加入长期监控吗？回复：1 加入 / 2 不加入'
       : `要加入长期监控吗？回复：${todo.map((c, i) => `${i + 1} ${c.name}`).join(' / ')} / ${todo.length + 1} 都不加`
@@ -396,6 +431,131 @@ ${question}`, card: null }
       }
     }
     return { text, card }
+  }
+
+  function dashboardReply(status) {
+    const d = status.dashboard
+    if (!d?.url) return '看板服务未启动：检查 dashboard.enabled 是否关闭、端口是否被占用（日志搜 dashboard）。'
+    const lines = ['看板（本轮新上架 / 降价，手机可直接看）：', d.url]
+    if (d.stable) lines.push('公网固定地址（可长期收藏），每轮扫描后自动更新。')
+    else if (d.publicUrl) lines.push('公网临时地址，每轮扫描后自动更新；若失效，重发「看板」获取新地址。')
+    else if (d.publicPending) lines.push('公网隧道启动中（约 10–20 秒），稍后重发「看板」即可拿到公网地址。')
+    else lines.push('当前是局域网地址：手机需与 Mac 同一 Wi-Fi；公网隧道未启动（检查 cloudflared 或 dashboard.public）。')
+    return lines.join('\n')
+  }
+
+  /** 按 AI 归一化后的关键词直接查，结果卡带样本/中位/最低。 */
+  async function queryByKeyword(keyword, name, status) {
+    if (!keyword) return '请补充具体车型（品牌+车系，例如 小米YU7）。'
+    let result
+    try {
+      result = await service.lookup(keyword, { name: name || keyword, enrich: false })
+    } catch (err) {
+      log.warn?.('query %s failed: %s', keyword, err.message)
+      return `查询「${name || keyword}」失败：${err.message}`
+    }
+    const sample = result?.agg?.sampleCount ?? 0
+    if (!sample) return { text: `没搜到「${name || keyword}」的西安在售车源。可以换个说法，或直接发“品牌+车型”。`, noResults: true }
+    const url = queryPageUrl(status, keyword)
+    if (url) {
+      return {
+        text: '',
+        card: queryCard({
+          name: name || keyword,
+          desc: `${sample} 台 · 中位 ${wan(result.agg.price?.median)} · 最低 ${wan(result.agg.price?.min)}`,
+          url,
+        }),
+      }
+    }
+    return lookup([{ id: slugTargetId(keyword), name: name || keyword, keyword }], status, name || keyword)
+  }
+
+  /** 不确定时先确认：给出候选编号，等用户选；选完再执行查询/加监控。 */
+  async function confirmChoice(intent, status, key, mode = 'query') {
+    const alts = (intent.alternatives ?? []).filter((a) => a?.keyword)
+    if (!alts.length) {
+      return intent.question || '请补充具体车型（品牌+车系，例如 小米YU7）。'
+    }
+    const candidates = alts.map((a) => ({ id: slugTargetId(a.keyword), name: a.name || a.keyword, keyword: a.keyword, reason: a.reason || '' }))
+    await service.setPendingEntry(key, { kind: mode === 'watch' ? 'confirm-watch' : 'confirm-query', candidates })
+    const lines = ['我需要确认一下你找的是哪款：', '']
+    for (const [i, c] of candidates.entries()) lines.push(`${i + 1}. ${c.name}${c.reason ? `（${c.reason}）` : ''}`)
+    lines.push('', '回复编号即可；也可以直接发“品牌+车型”。')
+    return lines.join('\n')
+  }
+
+  async function handleQueryConfirm(pending, normalized, key) {
+    const candidates = pending.candidates ?? []
+    if (/取消|算了|不用|^0$/.test(normalized)) {
+      await service.clearPendingEntry(key)
+      return '好的，已取消。'
+    }
+    let chosen = null
+    if (/^[1-9]$/.test(normalized)) chosen = candidates[Number(normalized) - 1] ?? null
+    else {
+      const text = normalize(normalized)
+      chosen = candidates.find((c) => text.includes(normalize(c.name)) || normalize(c.name).includes(text) || normalize(c.keyword) === text) ?? null
+    }
+    if (!chosen) return `请回复编号：${candidates.map((c, i) => `${i + 1}. ${c.name}`).join(' / ')}`
+    await service.clearPendingEntry(key)
+    const status = await service.status()
+    if (pending.kind === 'confirm-watch') return addWatchByKeyword(chosen, status, key)
+    return queryByKeyword(chosen.keyword, chosen.name, status)
+  }
+
+  async function addWatchByKeyword(candidate, status, key) {
+    const keyword = candidate.keyword || candidate.name
+    const name = candidate.name || keyword
+    if (!keyword) return '请补充具体车型（品牌+车系，例如 小米YU7）。'
+    const existing = status.targets.find((t) => t.keyword === keyword || normalize(t.name) === normalize(name))
+    if (existing) return `「${existing.name}」已经在监控里。`
+    return addCandidates([{ id: slugTargetId(keyword), name, keyword, enabled: true }], key, status)
+  }
+
+  async function routeByIntent(intent, status, key, raw) {
+    if (!intent) return null
+    const type = intent.intent
+    if (type === 'query') {
+      if (intent.needs_confirmation || !intent.keyword) return confirmChoice(intent, status, key, 'query')
+      const result = await queryByKeyword(intent.keyword, intent.name, status)
+      if (result?.noResults && intent.alternatives?.length) return confirmChoice(intent, status, key, 'query')
+      return result
+    }
+    if (type === 'watch_add') {
+      if (intent.needs_confirmation) return confirmChoice(intent, status, key, 'watch')
+      return addWatchByKeyword(intent, status, key)
+    }
+    if (type === 'watch_remove') {
+      const target = status.targets.find((t) => normalize(t.keyword) === normalize(intent.keyword) || normalize(t.name) === normalize(intent.name))
+      if (!target) return `监控里没有「${intent.name || intent.keyword || '这个车型'}」。`
+      await service.removeTarget(target.id)
+      return `已取消监控：${target.name}`
+    }
+    if (type === 'latest') return latest()
+    if (type === 'status') return summary()
+    if (type === 'dashboard') return dashboardReply(status)
+    if (type === 'help') return HELP
+    if (type === 'scan') {
+      service.scan('aibot').then((r) => log.info?.('aibot scan done: new=%d drop=%d', r.newListings ?? 0, r.priceDrops ?? 0)).catch((err) => log.warn?.('aibot scan failed: %s', err.message))
+      return '已触发扫描已监控车型，有新上架/降价会直接推卡片到群里。'
+    }
+    if (type === 'unknown') {
+      if (intent.alternatives?.length || intent.question) return confirmChoice(intent, status, key, 'query')
+      return null
+    }
+    return null
+  }
+
+  /** 主路由：先让 AI 分析意图；模型不可用/返回空才走确定性兜底。 */
+  async function routeWithAnalyzer(raw, status, key) {
+    if (typeof analyzer !== 'function') return null
+    let intent = null
+    try {
+      intent = await analyzer(raw, { targets: status.targets.map((t) => `${t.name}(${t.keyword})`) })
+    } catch (err) {
+      log.warn?.('analyzer failed: %s', err.message)
+    }
+    return routeByIntent(intent, status, key, raw)
   }
 
   async function addCandidates(candidates, key, status) {
@@ -457,6 +617,21 @@ ${question}`, card: null }
 
     const pending = await service.pending(key)
     if (pending) {
+      if (pending.kind === 'confirm-query' || pending.kind === 'confirm-watch') {
+        const candidates = pending.candidates ?? []
+        const multiple = candidates.length + 1
+        const selectionLike = /^[1-9]$/.test(normalized)
+          || /取消|算了|不用|^0$/.test(normalized)
+          || candidates.some((c) => normalized.includes(normalize(c.name)) || normalize(c.name).includes(normalized))
+        if (!pending.expired && selectionLike) {
+          if (/^[1-9]$/.test(normalized) && Number(normalized) > candidates.length) {
+            return `请回复 1–${multiple}（或 0 取消）。`
+          }
+          return handleQueryConfirm(pending, normalized, key)
+        }
+        // 用户说的是新问题：清掉旧确认，继续走正常路由
+        await service.clearPendingEntry(key)
+      }
       if (!pending.expired && isConfirmText(normalized)) {
         return handleConfirm(pending, normalized, key)
       }
@@ -468,18 +643,7 @@ ${question}`, card: null }
     if (/帮助|help|菜单|指令/.test(normalized)) return HELP
 
     if (/看板|网页版|dashboard/.test(normalized)) {
-      const st = await service.status()
-      const d = st.dashboard
-      if (d?.url) {
-        const lines = ['看板（本轮新上架 / 降价，手机可直接看）：', d.url]
-        if (d.stable) lines.push('公网固定地址（可长期收藏），每轮扫描后自动更新。')
-        else if (d.publicUrl) lines.push('公网临时地址，每轮扫描后自动更新；若失效，重发「看板」获取新地址。')
-        else if (d.publicPending) lines.push('公网隧道启动中（约 10–20 秒），稍后重发「看板」即可拿到公网地址。')
-        else lines.push('当前是局域网地址：手机需与 Mac 同一 Wi-Fi；公网隧道未启动（检查 cloudflared 或 dashboard.public）。')
-        lines.push('注意：闲鱼商品页在手机上可能提示“打开闲鱼 App”，点允许即可。')
-        return lines.join('\n')
-      }
-      return '看板服务未启动：检查 dashboard.enabled 是否关闭、端口是否被占用（日志搜 dashboard）。'
+      return dashboardReply(await service.status())
     }
 
     if (/扫描|刷新|抓取|更新/.test(normalized)) {
@@ -491,9 +655,31 @@ ${question}`, card: null }
 
     const status = await service.status()
 
-    // 1) 已监控车型：精确匹配（避免“理想L9”被“理想i6”截走）
+    // 精确的管理指令直接走，避免被模型误判；自然语言仍交给意图分析
+    if (/^最新$|^新上架$|^新的$|^新增$/.test(normalized)) return latest()
+    if (/^查$|^行情$|^状态$|^价格$|^报价$/.test(normalized)) return summary()
+
+    // 0) 先让模型分析用户意图；能确认的直接执行，不能确认的返回候选让用户确认
+    const routed = await routeWithAnalyzer(raw, status, key)
+    if (routed != null) return routed
+
+    // 1) 模型不可用/无法判断时的确定性兜底
+    // 已监控车型：精确匹配（避免“理想L9”被“理想i6”截走）
     const configured = detectConfigured(normalized, status)
-    if (configured) return targetReply(configured.id)
+    if (configured) {
+      const url = queryPageUrl(status, configured.keyword || configured.name)
+      if (url) {
+        return {
+          text: '',
+          card: queryCard({
+            name: configured.name,
+            desc: `${configured.sampleCount ?? 0} 台 · 中位 ${wan(configured.medianPrice)}`,
+            url,
+          }),
+        }
+      }
+      return targetReply(configured.id)
+    }
 
     // 2) 任意品牌+车型：先规则解析；失败再用模型理解一次模糊说法
     let resolved = null
@@ -503,53 +689,24 @@ ${question}`, card: null }
       log.warn?.('resolve model failed: %s', err.message)
     }
 
-    let guess = null
-    if (!resolved?.models?.length && analyzer) {
-      try {
-        guess = await analyzer(raw)
-        if (guess?.brand && guess?.model) {
-          const second = await resolveModels(`${guess.brand}${guess.model}`)
-          if (second?.models?.length) resolved = second
-        }
-      } catch (err) {
-        log.warn?.('llm analyze failed: %s', err.message)
-      }
-    }
-
-    // 模型也解析不出具体车系：把候选列给用户确认，不瞎猜结果
-    if (!resolved?.models?.length && guess) {
-      const alt = [guess, ...(guess.alternatives ?? [])]
-        .filter((x) => x?.brand && x?.model)
-        .map((x) => `${x.brand}${x.model}`)
-      const unique = [...new Set(alt)]
-      if (unique.length) {
-        return `我没能直接确定车型。你要找的是不是：${unique.join(' / ')}？\n请回复具体“品牌+车型”，例如“理想L9”。`
-      }
-    }
-
     if (resolved?.models?.length) {
-      const title = `${resolved.brand}${resolved.model}`.trim()
-      const reply = await lookup(resolved.models, status, title)
-      const already = new Set(status.targets.map((t) => t.id))
-      const todo = resolved.models.filter((c) => !already.has(c.id))
-      if (todo.length && reply?.noResults !== true) await service.setPendingEntry(key, { kind: 'add-watch', candidates: todo })
-      return reply
+      const first = resolved.models[0]
+      const url = queryPageUrl(status, first.keyword || first.name)
+      if (url) return { text: '', card: queryCard({ name: first.name, url }) }
+      return lookup(resolved.models, status, `${resolved.brand}${resolved.model}`.trim())
     }
     if (resolved && !resolved.models.length) {
       if (!resolved.model) return `已识别品牌「${resolved.brand}」，请补充具体车型，例如“${resolved.brand}L9”。`
-      const alternatives = (guess?.alternatives ?? []).map((x) => `${x.brand}${x.model}`)
-      const tip = alternatives.length ? `\n你要找的是不是：${alternatives.join(' / ')}？` : ''
-      return `我在闲鱼没找到「${resolved.brand}${resolved.model}」。${tip}\n请回复具体“品牌+车型”，例如“理想L9”“蔚来ES8”。`
+      return `没找到「${resolved.brand}${resolved.model}」这个具体车系，请换一个“品牌+车型”说法（例如“理想L9”“蔚来ES8”）。`
     }
 
     // 3) 目录兜底（宋L 这类口语简称）
     const catalog = matchCatalog(normalized)
     if (catalog.length) {
-      const reply = await lookup(catalog, status, '宋L')
-      const already = new Set(status.targets.map((t) => t.id))
-      const todo = catalog.filter((c) => !already.has(c.id))
-      if (todo.length && reply?.noResults !== true) await service.setPendingEntry(key, { kind: 'add-watch', candidates: todo })
-      return reply
+      const first = catalog[0]
+      const url = queryPageUrl(status, first.keyword || first.name)
+      if (url) return { text: '', card: queryCard({ name: first.name, url }) }
+      return lookup(catalog, status, '宋L')
     }
 
     if (/最新|新上架|新的|新增/.test(normalized)) return latest()

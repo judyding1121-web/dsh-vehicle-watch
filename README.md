@@ -66,7 +66,7 @@ pnpm install        # 本地 link 安装不会替你装 ws，必须手动执行�
 ### 方式 C：离线 tarball
 
 ```bash
-pnpm pack           # 生成 dsh-vehicle-watch-0.4.0.tgz
+pnpm pack           # 生成 dsh-vehicle-watch-0.6.0.tgz
 ```
 
 把 `.tgz` 拷到另一台电脑，安装时填 tarball 的绝对路径（同样支持）。
@@ -287,10 +287,10 @@ node scripts/make_html.mjs <latest.json> [out.html] [intervalHours]
 ```bash
 pnpm install                  # 只装 ws；@deepseek-ai/* 由 DSH 运行时提供
 pnpm run check                # 所有入口语法检查
-pnpm test                     # 离线自测：命令/解析/过滤（15）+ 服务/看板/请求队列/隧道解析（7）
+pnpm test                     # 离线自测：命令/解析/过滤/详情/决策/AI 意图（23）+ 服务/看板/请求队列/隧道/翻页/价格历史（9）
 ```
 
-离线测试覆盖：闲鱼卡片解析与过滤、聚合、命令路由、0 结果提示、HTML 看板渲染、扫描编排（新增/降价检测、全部失败保留上一份产物、部分失败标记、失败原因记录）、看板 HTTP 服务、并发请求串行化、隧道 URL 解析。
+离线测试覆盖：闲鱼搜索卡片 + 商品详情解析、过滤、聚合、决策标签、命令路由、0 结果提示、HTML 看板/查询页渲染、扫描编排（新增/降价、详情增强、价格历史、全部失败保留上一份产物、部分失败、失败原因）、自适应第 2 页、看板 HTTP 服务、并发请求串行化、隧道 URL 解析。
 
 CI（GitHub Actions，`.github/workflows/ci.yml`）在每次 push / PR 时执行：
 `pnpm install --frozen-lockfile` → `pnpm run check` → `pnpm test` → `pnpm pack` 冒烟。
@@ -305,7 +305,7 @@ CI（GitHub Actions，`.github/workflows/ci.yml`）在每次 push / PR 时执行
 cd plugins/dsh-vehicle-watch
 git init -b main
 git add .
-git commit -m "feat: dsh-vehicle-watch v0.4.0"
+git commit -m "feat: dsh-vehicle-watch v0.6.0"
 
 # 有 gh CLI：
 gh repo create dsh-vehicle-watch --public --source=. --push

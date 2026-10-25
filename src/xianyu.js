@@ -14,6 +14,7 @@ const API_BASE = 'https://h5api.m.goofish.com/h5'
 const HOME_URL = 'https://www.goofish.com/'
 const GAIA_API = 'mtop.gaia.nodejs.gaia.idle.data.gw.v2.index.get'
 const SEARCH_API = 'mtop.taobao.idlemtopsearch.pc.search'
+const DETAIL_API = 'mtop.taobao.idle.pc.detail'
 const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 const SEARCH_SPM_CNT = 'a21ybx.search.0.0'
 const SEARCH_SPM_PRE = 'a21ybx.search.searchInput.0'
@@ -138,6 +139,56 @@ export function parseXianyuCard(card) {
     mileageKm: parseMileage(title),
     detailUrl: `https://www.goofish.com/item?id=${listingId}`,
     priceDropYuan: null,
+  }
+}
+
+/** 解析闲鱼商品详情（用于给新上架/降价车源补车况、卖家、热度等决策字段）。 */
+export function parseXianyuDetail(data) {
+  const item = data?.itemDO ?? data?.item ?? null
+  if (!item) return null
+  const attrs = {}
+  for (const x of item.cpvLabels ?? []) {
+    if (x?.propertyName && x?.valueName) attrs[x.propertyName] = String(x.valueName)
+  }
+  for (const x of item.itemLabelExtList ?? []) {
+    if (x?.propertyText && x?.text && !attrs[x.propertyText]) attrs[x.propertyText] = String(x.text)
+  }
+  const sellerRaw = data?.sellerDO ?? {}
+  const remark = sellerRaw.remarkDO ?? {}
+  const images = (item.imageInfos ?? [])
+    .map((i) => String(i?.url ?? '').replace(/^http:\/\//i, 'https://'))
+    .filter(Boolean)
+  const seller = {
+    nick: String(sellerRaw.nick ?? sellerRaw.uniqueName ?? sellerRaw.desensitizationNick ?? '').trim(),
+    city: String(sellerRaw.city ?? sellerRaw.publishCity ?? '').trim(),
+    replyRatio24h: sellerRaw.replyRatio24h ?? null,
+    replyIn24hRatioDouble: sellerRaw.replyIn24hRatioDouble ?? null,
+    avgReply30dLong: sellerRaw.avgReply30dLong ?? null,
+    lastVisitTime: String(sellerRaw.lastVisitTime ?? '').trim(),
+    userRegDay: sellerRaw.userRegDay ?? null,
+    soldCount: sellerRaw.hasSoldNumInteger ?? null,
+    goodRemarks: remark.sellerGoodRemarkCnt ?? null,
+    badRemarks: remark.sellerBadRemarkCnt ?? null,
+    zhimaAuth: sellerRaw.zhimaAuth === true,
+    itemCount: sellerRaw.itemCount ?? null,
+    signature: String(sellerRaw.signature ?? '').trim(),
+    creditTag: sellerRaw.idleFishCreditTag?.iconUrl ? '闲鱼信用' : null,
+  }
+  return {
+    itemId: String(item.itemId ?? ''),
+    title: String(item.title ?? '').trim(),
+    priceYuan: Number(item.soldPrice) || null,
+    status: String(item.itemStatusStr ?? ''),
+    statusCode: item.itemStatus ?? null,
+    desc: String(item.desc ?? item.richTextDesc ?? '').trim(),
+    images: images.slice(0, 3),
+    attributes: attrs,
+    wantCount: item.wantCnt ?? null,
+    browseCount: item.browseCnt ?? null,
+    collectCount: item.collectCnt ?? null,
+    createTime: item.gmtCreate ? new Date(item.gmtCreate).toISOString() : null,
+    seller,
+    tags: (item.commonTags ?? []).map((t) => String(t?.text ?? '')).filter(Boolean),
   }
 }
 
@@ -281,7 +332,7 @@ export function createXianyuClient({ cookie = '', minGapMs = 3000, timeoutMs = 2
     return createHash('md5').update(`${token}&${t}&${APPKEY}&${dataStr}`).digest('hex')
   }
 
-  async function mtop(api, data, { spmCnt = 'a21ybx.home.0.0', spmPre = '', token } = {}) {
+  async function mtop(api, data, { spmCnt = 'a21ybx.home.0.0', spmPre = '', token, referer = HOME_URL } = {}) {
     return enqueue(async () => {
       const t = Date.now()
       const dataStr = JSON.stringify(data)
@@ -299,7 +350,7 @@ export function createXianyuClient({ cookie = '', minGapMs = 3000, timeoutMs = 2
           'user-agent': userAgent,
           'content-type': 'application/x-www-form-urlencoded',
           accept: 'application/json',
-          referer: HOME_URL,
+          referer,
           origin: 'https://www.goofish.com',
           cookie: cookieHeader(),
         },
@@ -402,5 +453,32 @@ export function createXianyuClient({ cookie = '', minGapMs = 3000, timeoutMs = 2
     }
   }
 
-  return { search, ensureToken, searchUrl }
+  /** 商品详情（用于增强新上架/降价车源的决策信息）。 */
+  async function detail(itemId) {
+    await ensureToken()
+    const id = String(itemId)
+    const apis = [
+      { api: 'mtop.taobao.idle.awesome.detail', data: { itemId: id } },
+      { api: 'mtop.taobao.idle.pc.detail', data: { itemId: id } },
+    ]
+    let lastError = null
+    for (const { api, data } of apis) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await mtop(api, data, { referer: `https://www.goofish.com/item?id=${encodeURIComponent(id)}` })
+        const ret = retList(result)
+        if (ret.some((r) => r.startsWith('SUCCESS'))) return result?.data ?? {}
+        lastError = new Error(`闲鱼详情失败：${ret.join('; ') || '未知错误'}`)
+        const tokenProblem = ret.some((r) => /TOKEN|SESSION/i.test(r))
+        const risk = ret.some((r) => /RGV587|SM::|FAIL_SYS_USER_VALIDATE|被挤爆/i.test(r))
+        if (!tokenProblem && !risk) break
+        jar.delete('_m_h5_tk')
+        jar.delete('_m_h5_tk_enc')
+        await sleep(risk ? 3000 : 500)
+        await ensureToken()
+      }
+    }
+    throw lastError ?? new Error('闲鱼详情失败')
+  }
+
+  return { search, detail, ensureToken, searchUrl }
 }

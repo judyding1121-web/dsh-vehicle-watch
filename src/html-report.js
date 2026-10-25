@@ -80,44 +80,59 @@ function priceCompare(price, median) {
   return `<span class="cmp ${diff < 0 ? 'good' : 'high'}">${diff < 0 ? '低于' : '高于'}中位 ${pct.toFixed(0)}%</span>`
 }
 
-/** 一条车源卡片：缩略图 + 标题 + 价格/对比 + 关键参数 + 卖家/标签 + 跳转。 */
+/** 一条车源卡片：整张卡可点；有详情时展示车况/卖家/历史价格等决策信息。 */
 function carCard({ listing, now, median, kind, oldPrice }) {
   const l = listing ?? {}
   const url = safeUrl(l.detailUrl)
   const price = Number(l.priceYuan)
+  const detail = l.detail ?? null
+  const attrs = detail?.attributes ?? {}
+  const decision = l.decision ?? { tags: [], risks: [] }
   const cut = kind === 'drop' && Number.isFinite(Number(oldPrice)) && Number.isFinite(price)
     ? Number(oldPrice) - price
     : null
   const chips = [
-    l.modelYear ? `${l.modelYear}款` : null,
-    l.licenseYear ? `${l.licenseYear}年上牌` : null,
+    attrs['过户次数'] ? `过户${String(attrs['过户次数']).replace(/\D/g, '')}次` : null,
+    attrs['上牌年月'] ? `上牌${attrs['上牌年月']}` : (l.licenseYear ? `${l.licenseYear}年上牌` : null),
     kmText(l.mileageKm) || null,
-    l.area || null,
-    l.wantCount != null ? `${l.wantCount}人想要` : null,
+    attrs['车源地'] || l.area || null,
+    detail?.wantCount != null ? `${detail.wantCount}人想要` : (l.wantCount != null ? `${l.wantCount}人想要` : null),
+    detail?.browseCount != null ? `${detail.browseCount}浏览` : null,
     relTime(l.publishTime, now) || null,
   ].filter(Boolean)
+  const sellerText = detail?.seller?.nick || l.seller || ''
+  const sellerMeta = [
+    detail?.seller?.soldCount != null ? `已售${detail.seller.soldCount}件` : null,
+    detail?.seller?.replyRatio24h ? `回复${detail.seller.replyRatio24h}` : null,
+    detail?.seller?.zhimaAuth ? '实名' : null,
+  ].filter(Boolean).join(' · ')
   const tags = (l.tags ?? [])
     .filter((t) => !/(想要|小时前|天前|分钟前|上新|发布)/.test(String(t)))
-    .slice(0, 4)
+    .slice(0, 3)
+  const appAttr = l.listingId ? ` data-xianyu-id="${esc(l.listingId)}"` : ''
   const thumb = l.pictureUrl
-    ? `<a class="thumb" href="${url}" target="_blank" rel="noopener"><img src="${esc(l.pictureUrl)}" loading="lazy" referrerpolicy="no-referrer" alt="" onerror="this.parentNode.classList.add('noimg')"></a>`
+    ? `<div class="thumb"><img src="${esc(l.pictureUrl)}" loading="lazy" referrerpolicy="no-referrer" alt="" onerror="this.parentNode.classList.add('noimg')"></div>`
     : '<div class="thumb noimg"></div>'
+  const detailTags = [...(decision.tags ?? []), ...tags].slice(0, 6)
   return `<li class="car">
-    ${thumb}
-    <div class="car-body">
-      <a class="car-title" href="${url}" target="_blank" rel="noopener" title="${esc(l.title)}">${esc(l.title)}</a>
-      <div class="car-price">
-        <b>${wan(price)}</b>
-        ${kind === 'drop' && cut ? `<span class="old">${wan(oldPrice)}</span><span class="cut">↓${wan(cut)}</span>` : ''}
-        ${priceCompare(price, median)}
+    <a class="car-hit"${appAttr} href="${url}" target="_blank" rel="noopener">
+      ${thumb}
+      <div class="car-body">
+        <div class="car-title" title="${esc(l.title)}">${esc(l.title)}</div>
+        <div class="car-price">
+          <b>${wan(price)}</b>
+          ${kind === 'drop' && cut ? `<span class="old">${wan(oldPrice)}</span><span class="cut">↓${wan(cut)}</span>` : ''}
+          ${priceCompare(price, median)}
+        </div>
+        <div class="chips">${chips.map((c) => `<span>${esc(c)}</span>`).join('')}</div>
+        ${detailTags.length ? `<div class="dtags">${detailTags.map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}
+        ${(decision.risks ?? []).length ? `<div class="drisk">${decision.risks.map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}
+        ${detail?.desc ? `<div class="desc2">${esc(detail.desc)}</div>` : ''}
+        <div class="car-foot">
+          <span class="seller">${sellerText ? `卖家：${esc(sellerText)}` : ''}${sellerMeta ? ` · ${esc(sellerMeta)}` : ''}</span>
+        </div>
       </div>
-      <div class="chips">${chips.map((c) => `<span>${esc(c)}</span>`).join('')}</div>
-      <div class="car-foot">
-        <span class="seller">${l.seller ? `卖家：${esc(l.seller)}` : ''}</span>
-        <span class="tags">${tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</span>
-        <a class="car-link" href="${url}" target="_blank" rel="noopener">看车源 ›</a>
-      </div>
-    </div>
+    </a>
   </li>`
 }
 
@@ -249,8 +264,10 @@ a:hover{text-decoration:underline}
 .group-head .group-count{color:var(--muted);font-size:12px}
 .items{list-style:none;margin:0;padding:0}
 .items{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:14px}
-.car{display:grid;grid-template-columns:116px minmax(0,1fr);gap:14px;padding-top:14px;border-top:1px dashed #eef0f3}
-.car:first-child{border-top:0;padding-top:2px}
+.items{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.car-hit{display:grid;grid-template-columns:116px minmax(0,1fr);gap:14px;padding:10px;border-radius:12px;color:inherit;text-decoration:none;transition:background .15s}
+.car-hit:hover{background:#f8fafc}
+.car-hit:active{background:#f1f5f9}
 .thumb{display:block;width:116px;height:86px;border-radius:10px;overflow:hidden;background:#f1f5f9;position:relative;flex:none}
 .thumb img{width:100%;height:100%;object-fit:cover;display:block}
 .thumb.noimg{background:linear-gradient(135deg,#eef2ff,#f8fafc)}
@@ -270,7 +287,11 @@ a:hover{text-decoration:underline}
 .seller{font-size:12px;color:var(--muted)}
 .tags{display:flex;gap:4px;flex-wrap:wrap}
 .tag{display:inline-block;font-size:11px;color:var(--muted);background:#f8fafc;border:1px solid #eef0f3;border-radius:6px;padding:0 6px;white-space:nowrap}
-.car-link{margin-left:auto;font-size:13px;color:var(--blue);white-space:nowrap}
+.dtags{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+.dtags span{font-size:11px;color:#0369a1;background:#f0f9ff;border:1px solid #e0f2fe;border-radius:999px;padding:0 7px;line-height:20px}
+.drisk{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
+.drisk span{font-size:11px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:999px;padding:0 7px;line-height:20px}
+.desc2{margin-top:7px;color:#475569;font-size:12.5px;line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
 .empty{text-align:center;padding:28px 18px}
 .empty-icon{width:40px;height:40px;line-height:40px;border-radius:50%;background:#f0fdf4;color:var(--green);font-size:20px;margin:0 auto 10px}
 .empty h2{margin:0 0 6px;font-size:17px}
@@ -300,16 +321,44 @@ td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
   .kpis{gap:8px}
   .kpi{padding:10px 12px}
   .kpi .v{font-size:22px}
-  .car{grid-template-columns:92px minmax(0,1fr);gap:10px}
+  .car-hit{grid-template-columns:92px minmax(0,1fr);gap:10px;padding:8px}
   .thumb{width:92px;height:70px}
   .car-price b{font-size:18px}
-  .car-link{margin-left:0;padding-top:2px}
   .stats{font-size:12px}
   .stats th,.stats td{padding:7px 4px}
   .card{padding:14px}
 }
 @media print{body{background:#fff}.details{display:none}}
 `
+
+const CLICK_JS = `
+(function(){
+  var ua = navigator.userAgent || ''
+  var isMobile = /iPhone|iPad|iPod|Android|Mobile/i.test(ua)
+  var isWeCom = /wxwork/i.test(ua) || /WeCom/i.test(ua) || /MicroMessenger/i.test(ua)
+  var isAndroid = /Android/i.test(ua)
+  function appUrl(id){
+    if (isAndroid) return 'intent://item?id=' + encodeURIComponent(id) + '#Intent;scheme=fleamarket;package=com.taobao.idlefish;end'
+    return 'fleamarket://item?id=' + encodeURIComponent(id)
+  }
+  function openInApp(id, fallbackUrl){
+    var hidden = false
+    function markHidden(){ hidden = true }
+    document.addEventListener('visibilitychange', markHidden, { once: true })
+    window.addEventListener('pagehide', markHidden, { once: true })
+    setTimeout(function(){ if (!hidden && !document.hidden) window.location.href = fallbackUrl }, 1600)
+    window.location.href = appUrl(id)
+  }
+  document.addEventListener('click', function(e){
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+    var a = e.target && e.target.closest ? e.target.closest('a[data-xianyu-id]') : null
+    if (!a || !isMobile) return
+    if (isWeCom) return // 企微 WebView 无法拉起外部 App，直接打开网页
+    e.preventDefault()
+    openInApp(a.getAttribute('data-xianyu-id'), a.getAttribute('href'))
+  })
+})();
+`;
 
 function renderHero(latest, targets, intervalHours) {
   const now = new Date(latest.generatedAt || Date.now())
@@ -352,7 +401,7 @@ export function renderHtmlReport({ latest, intervalHours = 2, title = '西安二
     emptyState(hasChanges, baseline),
     `<section class="card"><h3>各车型行情（本轮样本）</h3>${statsTable(targets)}</section>`,
     sampleDetails(targets, now),
-    `<div class="foot">口径：闲鱼卖家报价，非成交价；同一台车可能重复挂牌。样本为搜索前 N 页过滤后的结果，不代表全站；新增/降价与上一轮扫描对比。点「看车源」打开闲鱼商品页；手机若提示“打开闲鱼 App”，允许即可。看板仅供个人参考。</div>`,
+    `<div class="foot">数据为闲鱼卖家报价，仅供参考。</div>`,
   ].filter(Boolean).join('\n')
 
   return `<!doctype html>
@@ -368,6 +417,47 @@ export function renderHtmlReport({ latest, intervalHours = 2, title = '西安二
 <div class="wrap">
 ${body}
 </div>
+<script>${CLICK_JS}</script>
+</body>
+</html>
+`
+}
+
+/** 单次查询结果页：干净的车源卡片列表，整卡可点。 */
+export function renderQueryPage({ keyword = '', city = '西安', agg = {}, listings = [], now = Date.now() } = {}) {
+  const items = (Array.isArray(listings) ? listings : [])
+    .filter((l) => l && Number(l.priceYuan))
+    .sort((a, b) => Number(a.priceYuan) - Number(b.priceYuan))
+    .slice(0, 40)
+  const median = agg?.price?.median
+  const min = agg?.price?.min
+  const meta = [
+    `共 <b>${items.length}</b> 台在售`,
+    median ? `中位 <b>${wan(median)}</b>` : null,
+    min ? `最低 <b>${wan(min)}</b>` : null,
+  ].filter(Boolean).join(' ｜ ')
+  const list = items.length
+    ? `<section class="card"><ul class="items">${items.map((l) => carCard({ listing: l, now, median })).join('')}</ul></section>`
+    : '<section class="card"><div class="empty">没搜到在售车源</div></section>'
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<title>${esc(keyword)} · 闲鱼车源</title>
+<style>${STYLE}</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>${esc(keyword)}</h1>
+    <div class="sub">${esc(city)} · 闲鱼在售车源</div>
+    <div class="meta">${meta}</div>
+  </div>
+  ${list}
+</div>
+<script>${CLICK_JS}</script>
 </body>
 </html>
 `

@@ -1,7 +1,8 @@
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
-import { aggregateListings, createXianyuClient, filterListings, searchUrl } from './xianyu.js'
+import { aggregateListings, createXianyuClient, filterListings, parseXianyuDetail, searchUrl } from './xianyu.js'
+import { summarizeListing } from './decision.js'
 import { loadState, pruneSeen, saveState } from './state.js'
 import { buildMessages, formatWan, Notifier } from './notify.js'
 import { generateReport } from './report.js'
@@ -34,6 +35,10 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
   const excludeKeywords = config.excludeKeywords ?? DEFAULT_EXCLUDES
   const carCategoryId = config.carCategoryId ?? '127302001'
   const pages = Math.max(1, config.xianyu?.pages ?? 1)
+  const adaptivePages = config.xianyu?.adaptivePages !== false
+  const enrichDetails = config.xianyu?.enrichDetails !== false
+  const enrichMax = Math.max(0, config.xianyu?.enrichMax ?? 12)
+  const queryEnrichMax = Math.max(0, config.xianyu?.queryEnrichMax ?? 3)
   const xianyu = xianyuClient ?? createXianyuClient({
     cookie: config.xianyu?.cookie ?? '',
     minGapMs: config.xianyu?.minGapMs ?? config.fetch?.minGapMs ?? 3000,
@@ -66,23 +71,70 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     return [...map.values()].map((t) => ({ ...t, keyword: t.keyword || t.name }))
   }
 
-  /** 抓一个 target 的搜索结果（可翻页），返回原始卡片与分页信息。 */
+  // 详情缓存：同一商品 10 分钟内不重复请求（扫描/查询/看板查询共用）
+  const detailCache = new Map()
+  const DETAIL_TTL_MS = 10 * 60_000
+
+  async function getDetail(listingId) {
+    if (typeof xianyu?.detail !== 'function') return null
+    const hit = detailCache.get(String(listingId))
+    if (hit && Date.now() - hit.at < DETAIL_TTL_MS) return hit.detail
+    try {
+      const raw = await xianyu.detail(listingId)
+      const detail = parseXianyuDetail(raw)
+      if (detail) detailCache.set(String(listingId), { at: Date.now(), detail })
+      return detail
+    } catch (err) {
+      log.warn?.('detail %s failed: %s', listingId, err?.message ?? err)
+      return null
+    }
+  }
+
+  /** 给指定车源补详情 + 决策标签（只用于新上架/降价/查询 Top N，控制请求量）。 */
+  async function enrichListings(listings, { median = null, max = 0 } = {}) {
+    const picked = (listings ?? []).filter((l) => l?.listingId).slice(0, Math.max(0, max))
+    for (const listing of picked) {
+      const detail = await getDetail(listing.listingId)
+      if (detail) listing.detail = detail
+      listing.decision = summarizeListing(listing, { median, cityName })
+    }
+    return picked.filter((l) => l.detail).length
+  }
+
+  /** 抓一个 target 的搜索结果（自适应翻页）：首页过滤后样本多才补第 2 页。 */
   async function fetchTargetListings(target) {
     const collected = []
     let rawCount = 0
     let pageInfo = { page: 1, total: null, hasNextPage: null }
-    for (let page = 1; page <= pages; page++) {
+
+    const fetchPage = async (page) => {
       const res = await xianyu.search(target.keyword, page, { province, city: cityName })
       rawCount += res.rawCount
       collected.push(...res.listings)
-      pageInfo = { ...res.pageInfo }
-      if (res.pageInfo.hasNextPage === false) break
+      pageInfo = { ...res.pageInfo, page }
+      return res
     }
-    const dedup = new Map()
-    for (const listing of collected) if (!dedup.has(listing.listingId)) dedup.set(listing.listingId, listing)
-    const filtered = filterListings([...dedup.values()], {
-      keyword: target.keyword, cityName, minPriceYuan, excludeKeywords, carCategoryId,
-    })
+    const dedupFilter = () => {
+      const dedup = new Map()
+      for (const listing of collected) if (!dedup.has(listing.listingId)) dedup.set(listing.listingId, listing)
+      return filterListings([...dedup.values()], {
+        keyword: target.keyword, cityName, minPriceYuan, excludeKeywords, carCategoryId,
+      })
+    }
+
+    await fetchPage(1)
+    let filtered = dedupFilter()
+    // 默认只扫第 1 页；高供给车型（过滤后 >= 10 台）才补第 2 页，低供给车型不浪费请求
+    if (adaptivePages && pages === 1 && filtered.length >= 10 && pageInfo.hasNextPage !== false) {
+      await fetchPage(2)
+      filtered = dedupFilter()
+    } else {
+      for (let page = 2; page <= pages; page++) {
+        if (pageInfo.hasNextPage === false) break
+        await fetchPage(page)
+      }
+      filtered = dedupFilter()
+    }
     return { rawCount, filtered, pageInfo }
   }
 
@@ -97,6 +149,7 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
       if (!targets.length) return { ok: false, message: '没有启用的 target', targets: 0 }
 
       const results = []
+      let detailBudget = enrichMax
       for (const target of targets) {
         const prev = state.targets?.[target.id] ?? null
         try {
@@ -120,15 +173,42 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
           const priceDrops = firstRun ? [] : agg.cityListings
             .filter((l) => seen[l.listingId]?.lastPrice && l.priceYuan != null && seen[l.listingId].lastPrice - l.priceYuan >= (config.priceDropAbs ?? 1000))
             .map((l) => ({ listing: l, oldPrice: seen[l.listingId].lastPrice, newPrice: l.priceYuan }))
-
-          // 更新 seen：保留 firstSeen，刷新 lastSeen/lastPrice；清掉长期不出现的
-          const nextSeen = { ...seen }
+          const dropIds = new Set(priceDrops.map((d) => d.listing.listingId))
           const nowIso = localIso()
+
+          // 价格历史：首次价 / 上次价 / 历史最低 / 累计降价次数
           for (const l of agg.cityListings) {
+            const old = seen[l.listingId]
+            l.history = {
+              firstPrice: old?.firstPrice ?? old?.lastPrice ?? l.priceYuan,
+              previousPrice: old?.lastPrice ?? null,
+              minPrice: Math.min(old?.minPrice ?? l.priceYuan, l.priceYuan),
+              dropCount: (old?.dropCount ?? 0) + (dropIds.has(l.listingId) ? 1 : 0),
+              firstSeen: old?.firstSeen ?? null,
+            }
+          }
+
+          // 只对“本轮新上架 / 降价”补详情，控制请求量；详情失败不影响整轮扫描
+          const changed = [...newListings, ...priceDrops.map((d) => d.listing)]
+          const uniq = [...new Map(changed.map((l) => [l.listingId, l])).values()]
+          const take = uniq.slice(0, Math.max(0, detailBudget))
+          if (take.length) {
+            const enriched = await enrichListings(take, { median: agg.price?.median, max: take.length })
+            detailBudget -= take.length
+            if (enriched) log.info?.('detail enriched %d/%d for %s', enriched, take.length, target.name)
+          }
+
+          // 更新 seen：保留 firstSeen，刷新 lastSeen/firstPrice/minPrice/dropCount
+          const nextSeen = { ...seen }
+          for (const l of agg.cityListings) {
+            const old = seen[l.listingId]
             nextSeen[l.listingId] = {
-              firstSeen: seen[l.listingId]?.firstSeen ?? nowIso,
+              firstSeen: old?.firstSeen ?? nowIso,
               lastSeen: nowIso,
               lastPrice: l.priceYuan,
+              firstPrice: old?.firstPrice ?? l.priceYuan,
+              minPrice: Math.min(old?.minPrice ?? l.priceYuan, l.priceYuan),
+              dropCount: (old?.dropCount ?? 0) + (dropIds.has(l.listingId) ? 1 : 0),
             }
           }
           state.targets[target.id] = {
@@ -265,7 +345,7 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
   }
 
   /** 临时查询一个关键词（不写入监控状态），给机器人双向指令用。 */
-  async function lookup(keyword, { name = keyword } = {}) {
+  async function lookup(keyword, { name = keyword, enrich = true } = {}) {
     const res = await xianyu.search(keyword, 1, { province, city: cityName })
     const listings = filterListings(res.listings, { keyword, cityName, minPriceYuan, excludeKeywords, carCategoryId })
     const agg = aggregateListings({
@@ -275,6 +355,11 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
       pageInfo: res.pageInfo,
       cityName,
     })
+    // 查询结果先按价格排序，再给最便宜的 Top N 补详情（页面默认也按价格排）
+    if (enrich && enrichDetails && queryEnrichMax > 0) {
+      const cheapest = [...agg.cityListings].sort((a, b) => Number(a.priceYuan) - Number(b.priceYuan))
+      await enrichListings(cheapest, { median: agg.price?.median, max: queryEnrichMax })
+    }
     return { agg, listings: agg.cityListings, keyword }
   }
 

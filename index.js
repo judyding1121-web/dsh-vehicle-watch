@@ -83,6 +83,10 @@ export const Config = z.object({
   xianyu: z.object({
     cookie: z.string().default(''),          // 可选：登录 Cookie，匿名也能搜，填了更稳
     pages: z.natural().default(1),           // 每个关键词翻几页（每页 30 条）
+    adaptivePages: z.boolean().default(true), // 第 1 页过滤后样本 >=10 才自动补第 2 页
+    enrichDetails: z.boolean().default(true), // 只对新上架/降价/查询 Top N 拉商品详情
+    enrichMax: z.natural().default(12),       // 每轮最多补多少条详情
+    queryEnrichMax: z.natural().default(3),   // 单次查询最多补多少条详情
     minGapMs: z.natural().default(3000),     // 请求间隔，太低容易触发风控
     timeoutMs: z.natural().default(20000),
   }).default({}),
@@ -148,6 +152,7 @@ export function apply(ctx, config) {
           port: config.dashboard?.port ?? 47800,
           host: config.dashboard?.host || '0.0.0.0',
           log,
+          queryHandler: (q) => service.lookup(q, { name: q }),
         })
       } catch (err) {
         log.warn('dashboard server failed: %s', err.message)

@@ -56,17 +56,46 @@ function listing(keyword, id, price, extra = {}) {
   }
 }
 
+function fakeDetail(id) {
+  return {
+    itemDO: {
+      itemId: id, title: '测试车', soldPrice: 198000, itemStatusStr: '在线',
+      desc: '个人一手，原版原漆，无事故，2024年07月上牌，3.5万公里',
+      wantCnt: 12, browseCnt: 320, collectCnt: 4, gmtCreate: 1792852176000,
+      cpvLabels: [
+        { propertyName: '过户次数', valueName: '0次' },
+        { propertyName: '上牌年月', valueName: '2024年 07月' },
+        { propertyName: '车源地', valueName: '陕西 西安' },
+        { propertyName: '上牌地', valueName: '陕 A' },
+      ],
+      imageInfos: [{ url: 'http://img.alicdn.com/a.jpg' }],
+      commonTags: [],
+    },
+    sellerDO: {
+      nick: '测试卖家', city: '西安', replyRatio24h: '90%', hasSoldNumInteger: 30,
+      zhimaAuth: true, remarkDO: { sellerGoodRemarkCount: 1, sellerGoodRemarkCnt: 12, sellerBadRemarkCnt: 0 },
+    },
+  }
+}
+
 function makeFakeClient(map) {
   return {
     failAll: false,
     failKeywords: new Set(),
     calls: [],
     map,
+    detailCalls: [],
+    detailError: null,
     async search(keyword) {
       this.calls.push(keyword)
       if (this.failAll) throw new Error('RGV587_ERROR::SM::被挤爆啦')
       if (this.failKeywords.has(keyword)) throw new Error('RGV587_ERROR::SM::被挤爆啦')
       return { listings: this.map.get(keyword) ?? [], rawCount: 30, pageInfo: { page: 1, total: 100, hasNextPage: false } }
+    },
+    async detail(id) {
+      this.detailCalls.push(id)
+      if (this.detailError) throw new Error('RGV587_ERROR::SM::被挤爆啦')
+      return fakeDetail(id)
     },
   }
 }
@@ -159,6 +188,79 @@ await test('第二轮：新增车源 / 降价检测', async () => {
   assert.equal(su7.priceDrops[0].newPrice, 198000)
 })
 
+await test('详情增强 + 价格历史：新上架/降价才拉详情，决策标签可用', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'vw-svc-'))
+  const client = makeFakeClient(new Map([
+    ['小米SU7', [listing('小米SU7', 'a1', 200000), listing('小米SU7', 'a2', 205000)]],
+    ['理想i6', [listing('理想i6', 'b1', 230000)]],
+  ]))
+  const svc = await makeService(dir, client)
+  await svc.scan('baseline')
+  assert.equal(client.detailCalls.length, 0, '基线轮不应补详情')
+
+  client.map.get('小米SU7')[0].priceYuan = 198000
+  client.map.get('小米SU7').push(listing('小米SU7', 'a4', 180000))
+  const second = await svc.scan('test')
+  assert.equal(second.newListings, 1)
+  assert.equal(second.priceDrops, 1)
+  assert.ok(client.detailCalls.includes('a1') && client.detailCalls.includes('a4'), '只对变化车源补详情')
+
+  const latest = JSON.parse(await readFile(path.join(dir, 'reports', 'latest.json'), 'utf8'))
+  const su7 = latest.targets.find((t) => t.targetId === 'xiaomi-su7')
+  const drop = su7.priceDrops[0].listing
+  assert.equal(drop.listingId, 'a1')
+  assert.equal(drop.history.firstPrice, 200000)
+  assert.equal(drop.history.previousPrice, 200000)
+  assert.equal(drop.history.minPrice, 198000)
+  assert.equal(drop.history.dropCount, 1)
+  assert.ok(drop.detail?.attributes?.['过户次数'] === '0次')
+  assert.ok(drop.decision.tags.includes('一手'))
+
+  const fresh = su7.newListings[0].listing ?? su7.newListings[0]
+  assert.equal(fresh.history.firstPrice, 180000)
+  assert.equal(fresh.history.previousPrice, null)
+  assert.ok(fresh.detail)
+  assert.ok(fresh.decision)
+
+  const html = await readFile(second.html, 'utf8')
+  assert.ok(html.includes('原版原漆') || html.includes('一手'), '看板应展示决策标签')
+  assert.ok(html.includes('过户0次') || html.includes('上牌2024年'), '看板应展示车况属性')
+})
+
+await test('自适应翻页：高供给车型才补第 2 页，低供给不浪费请求', async () => {
+  const big = []
+  for (let i = 0; i < 12; i++) big.push(listing('小米SU7', `page1-${i}`, 190000 + i * 1000))
+  const extra = []
+  for (let i = 0; i < 3; i++) extra.push(listing('小米SU7', `page2-${i}`, 210000 + i * 1000))
+  const pageClient = {
+    calls: [],
+    async search(keyword, page = 1) {
+      this.calls.push(page)
+      return { listings: page === 1 ? big : extra, rawCount: 30, pageInfo: { page, total: 200, hasNextPage: page === 1 } }
+    },
+    async detail() { return fakeDetail('x') },
+  }
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'vw-adaptive-'))
+  const svc = await makeService(dir, pageClient)
+  const summary = await svc.scan('test')
+  assert.equal(summary.ok, true)
+  assert.deepEqual([...new Set(pageClient.calls)], [1, 2], '高供给应自动补第 2 页')
+
+  const low = [{}, {}]
+  const lowClient = {
+    calls: [],
+    async search(keyword, page = 1) {
+      this.calls.push(page)
+      return { listings: low.map((_, i) => listing('小米SU7', `low-${i}`, 200000 + i * 1000)), rawCount: 30, pageInfo: { page, total: 100, hasNextPage: true } }
+    },
+    async detail() { return fakeDetail('x') },
+  }
+  const dir2 = await mkdtemp(path.join(os.tmpdir(), 'vw-adaptive2-'))
+  const svc2 = await makeService(dir2, lowClient)
+  await svc2.scan('test')
+  assert.deepEqual([...new Set(lowClient.calls)], [1], '低供给不应补第 2 页')
+})
+
 await test('全部失败：保留上一份看板与 latest.json，不写空数据', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'vw-svc-'))
   const client = makeFakeClient(new Map([
@@ -213,7 +315,19 @@ await test('看板 HTTP 服务：HTML/JSON/404，端口 0 自动分配', async (
   await writeFile(htmlPath, '<!doctype html><title>dash</title><h1>看板</h1>', 'utf8')
   await writeFile(jsonPath, '{"ok":true}', 'utf8')
 
-  const server = await startDashboardServer({ filePath: htmlPath, jsonPath, port: 0, log: silent })
+  const server = await startDashboardServer({
+    filePath: htmlPath,
+    jsonPath,
+    port: 0,
+    log: silent,
+    queryHandler: async (q) => ({
+      agg: { price: { min: 180000, median: 190000 }, sampleCount: 2 },
+      listings: [
+        { listingId: 'q1', title: `${q} 测试车 1`, priceYuan: 180000, area: '雁塔区', detailUrl: 'https://www.goofish.com/item?id=q1', pictureUrl: 'https://img.alicdn.com/q1.jpg', tags: [], seller: '卖家A', wantCount: 3, modelYear: 2024, mileageKm: 20000 },
+        { listingId: 'q2', title: `${q} 测试车 2`, priceYuan: 200000, area: '未央区', detailUrl: 'https://www.goofish.com/item?id=q2', pictureUrl: 'https://img.alicdn.com/q2.jpg', tags: [], seller: '卖家B', wantCount: 5, modelYear: 2024, mileageKm: 30000 },
+      ],
+    }),
+  })
   assert.ok(server.port > 0)
   const urls = dashboardUrls(server.port)
   assert.ok(urls.local.startsWith('http://127.0.0.1:'))
@@ -229,6 +343,24 @@ await test('看板 HTTP 服务：HTML/JSON/404，端口 0 自动分配', async (
 
     const missing = await fetch(`http://127.0.0.1:${server.port}/nope`)
     assert.equal(missing.status, 404)
+
+    const go = await fetch(`http://127.0.0.1:${server.port}/go?id=1094316732077`)
+    assert.equal(go.status, 200)
+    const goHtml = await go.text()
+    assert.ok(goHtml.includes('fleamarket://item?id=1094316732077'))
+    assert.ok(goHtml.includes('https://www.goofish.com/item?id=1094316732077'))
+    assert.ok(goHtml.includes('wxwork'))
+    const badGo = await fetch(`http://127.0.0.1:${server.port}/go`)
+    assert.equal(badGo.status, 400)
+
+    const query = await fetch(`http://127.0.0.1:${server.port}/query?q=${encodeURIComponent('理想L9')}`)
+    assert.equal(query.status, 200)
+    const queryHtml = await query.text()
+    assert.ok(queryHtml.includes('理想L9'))
+    assert.ok(queryHtml.includes('class="car-hit"'))
+    assert.ok(queryHtml.includes('q1'))
+    const badQuery = await fetch(`http://127.0.0.1:${server.port}/query`)
+    assert.equal(badQuery.status, 400)
   } finally {
     await server.close()
   }

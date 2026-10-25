@@ -15,6 +15,16 @@ function mileageText(km) {
   return km == null ? '—' : (km / 10000).toFixed(2) + '万km'
 }
 
+function decisionText(listing) {
+  const tags = listing?.decision?.tags ?? []
+  const risks = listing?.decision?.risks ?? []
+  return [...tags, ...risks.map((r) => `⚠${r}`)].join(' · ')
+}
+
+function attrText(listing, key) {
+  return listing?.detail?.attributes?.[key] ?? null
+}
+
 function safeUrl(url, fallback) {
   const u = String(url ?? '')
   return u.startsWith('http://') || u.startsWith('https://') ? u : fallback
@@ -25,35 +35,40 @@ function listingCard({ seriesName, kind, listing, cityName, oldPrice = null }) {
   const isDrop = kind === 'drop' && oldPrice != null
   const detailUrl = safeUrl(listing.detailUrl, GOOFISH_HOME)
   const title = isDrop ? `${seriesName} · 降价` : `${seriesName} · 新上架`
+  const detail = listing.detail ?? null
+  const attrs = detail?.attributes ?? {}
+  const seller = detail?.seller?.nick || listing.seller || null
   const desc = clip(
     [listing.modelYear ? `${listing.modelYear}款` : null, listing.trim].filter(Boolean).join(' ') || listing.title || '闲鱼车源',
     30,
   )
   const price = formatWan(listing.priceYuan)
-  const area = listing.area || cityName
-  const want = listing.wantCount != null ? `${listing.wantCount}人想要` : null
+  const area = attrs['车源地'] || listing.area || cityName
+  const transfer = attrs['过户次数'] || null
+  const want = detail?.wantCount ?? listing.wantCount
+  const tagLine = decisionText(listing)
   const sub = isDrop
-    ? `原价 ${formatWan(oldPrice)} → 现价 ${price}（↓${formatWan(oldPrice - listing.priceYuan)}）`
-    : [area, listing.licenseYear ? `${listing.licenseYear}年上牌` : null, want].filter(Boolean).join('｜')
+    ? clip([`原价 ${formatWan(oldPrice)} → 现价 ${price}（↓${formatWan(oldPrice - listing.priceYuan)}）`, tagLine].filter(Boolean).join('｜'), 112)
+    : clip([area, transfer ? `过户${String(transfer).replace(/\D/g, '')}次` : null, want != null ? `${want}人想要` : null, tagLine].filter(Boolean).join('｜'), 112)
   const rows = isDrop
     ? [
         { keyname: '原价', value: formatWan(oldPrice) },
         { keyname: '现价', value: price },
         { keyname: '降幅', value: '↓' + formatWan(oldPrice - listing.priceYuan) },
-        { keyname: '地区', value: area },
+        { keyname: '过户', value: transfer ?? '—' },
       ]
     : [
-        { keyname: '地区', value: area },
-        { keyname: '上牌', value: listing.licenseYear ? `${listing.licenseYear}年` : '—' },
+        { keyname: '过户', value: transfer ?? '—' },
+        { keyname: '上牌', value: attrs['上牌年月'] || (listing.licenseYear ? `${listing.licenseYear}年` : '—') },
         { keyname: '里程', value: mileageText(listing.mileageKm) },
-        { keyname: '想要', value: want ?? '—' },
+        { keyname: '卖家', value: clip(seller ?? '—', 12) },
       ]
   return {
     card_type: 'text_notice',
     source: { desc: '闲鱼 · 卖家报价', desc_color: 0 },
     main_title: { title: clip(title, 26), desc },
     emphasis_content: { title: clip(price, 10), desc: isDrop ? '现卖家报价' : '卖家报价' },
-    sub_title_text: clip(sub, 112),
+    sub_title_text: sub,
     horizontal_content_list: rows,
     jump_list: [{ type: 1, title: '查看闲鱼商品', url: detailUrl }],
     card_action: { type: 1, url: detailUrl },
@@ -115,7 +130,7 @@ export function buildMessages(results, { cityName = '西安', maxPush = 8, notif
       messages.push({
         targetId: r.agg.targetId,
         kind: 'new',
-        text: `【${seriesName} · ${cityName}】新上架\n${listing.title}\n${formatWan(listing.priceYuan)}｜${listing.area || cityName}｜${mileageText(listing.mileageKm)}\n${detailUrl}`,
+        text: `【${seriesName} · ${cityName}】新上架\n${listing.title}\n${formatWan(listing.priceYuan)}｜${listing.area || cityName}｜${mileageText(listing.mileageKm)}\n${decisionText(listing) ? decisionText(listing) + '\n' : ''}${detailUrl}`,
         card: listingCard({ seriesName, kind: 'new', listing, cityName }),
       })
     }
@@ -133,7 +148,7 @@ export function buildMessages(results, { cityName = '西安', maxPush = 8, notif
       messages.push({
         targetId: r.agg.targetId,
         kind: 'drop',
-        text: `【${seriesName} · ${cityName}】降价\n${d.listing.title}\n${formatWan(d.oldPrice)} → ${formatWan(d.newPrice)}（↓${formatWan(d.oldPrice - d.newPrice)}）\n${detailUrl}`,
+        text: `【${seriesName} · ${cityName}】降价\n${d.listing.title}\n${formatWan(d.oldPrice)} → ${formatWan(d.newPrice)}（↓${formatWan(d.oldPrice - d.newPrice)}）\n${decisionText(d.listing) ? decisionText(d.listing) + '\n' : ''}${detailUrl}`,
         card: listingCard({ seriesName, kind: 'drop', listing: d.listing, cityName, oldPrice: d.oldPrice }),
       })
     }
