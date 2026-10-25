@@ -161,7 +161,6 @@ function carCard({ listing, now, median, kind, oldPrice, standalone = false }) {
         </div>
       </div>
     </a>
-    ${l.listingId ? `<div class="car-actions">${standalone ? `<a class="open-app" data-app-id="${esc(l.listingId)}" href="${url}" target="_blank" rel="noopener">打开闲鱼 App</a>` : `<a class="open-app" href="/go?id=${encodeURIComponent(l.listingId)}" target="_blank" rel="noopener">打开闲鱼 App</a>`}</div>` : ''}
   </li>`
 }
 
@@ -316,9 +315,6 @@ a:hover{text-decoration:underline}
 .seller{font-size:12px;color:var(--muted)}
 .tags{display:flex;gap:4px;flex-wrap:wrap}
 .tag{display:inline-block;font-size:11px;color:var(--muted);background:#f8fafc;border:1px solid #eef0f3;border-radius:6px;padding:0 6px;white-space:nowrap}
-.car-actions{display:flex;justify-content:flex-end;margin:2px 4px 2px 0}
-.open-app{display:inline-block;font-size:12px;color:#0369a1;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:4px 10px;text-decoration:none;white-space:nowrap}
-.open-app:active{background:#e0f2fe}
 .dtags{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
 .dtags span{font-size:11px;color:#0369a1;background:#f0f9ff;border:1px solid #e0f2fe;border-radius:999px;padding:0 7px;line-height:20px}
 .drisk{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
@@ -392,13 +388,6 @@ const CLICK_JS = `
   }
   document.addEventListener('click', function(e){
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
-    var explicit = e.target && e.target.closest ? e.target.closest('a[data-app-id]') : null
-    if (explicit) {
-      if (!isMobile) return
-      e.preventDefault()
-      openInApp(explicit.getAttribute('data-app-id'), explicit.getAttribute('href'))
-      return
-    }
     var a = e.target && e.target.closest ? e.target.closest('a[data-xianyu-id]') : null
     if (!a || !isMobile) return
     e.preventDefault()

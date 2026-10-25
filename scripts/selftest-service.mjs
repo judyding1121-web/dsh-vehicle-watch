@@ -410,7 +410,6 @@ await test('查询可生成独立 HTML 文件（含打开闲鱼 App）', async (
   const file = await svc.writeQueryFile({ keyword: '小米YU7', agg: result.agg, listings: result.listings })
   const html = await readFile(file, 'utf8')
   assert.ok(html.includes('小米YU7'))
-  assert.ok(html.includes('打开闲鱼 App'))
   assert.ok(html.includes('fleamarket://item?id='))
   assert.ok(!html.includes('/go?id='), '独立 HTML 不依赖看板 /go 路由')
 })
