@@ -81,6 +81,23 @@ function priceCompare(price, median) {
   return `<span class="cmp ${diff < 0 ? 'good' : 'high'}">${diff < 0 ? '低于' : '高于'}中位 ${pct.toFixed(0)}%</span>`
 }
 
+/** 描述里常以标题开头，去掉重复的标题部分，只保留补充信息。 */
+function cleanDetailDesc(desc, title) {
+  let d = String(desc ?? '').trim()
+  const t = String(title ?? '').trim()
+  if (!d || !t) return d
+  const norm = (v) => String(v).replace(/\s+/g, '')
+  if (norm(d).startsWith(norm(t))) {
+    d = d.slice(t.length).trim()
+  } else {
+    const first = d.split('\n')[0].trim()
+    if (first && (norm(first).includes(norm(t)) || norm(t).includes(norm(first)))) {
+      d = d.split('\n').slice(1).join('\n').trim()
+    }
+  }
+  return d
+}
+
 /** 一条车源卡片：整张卡可点；有详情时展示车况/卖家/历史价格等决策信息。 */
 function carCard({ listing, now, median, kind, oldPrice, standalone = false }) {
   const l = listing ?? {}
@@ -114,7 +131,17 @@ function carCard({ listing, now, median, kind, oldPrice, standalone = false }) {
   const thumb = l.pictureUrl
     ? `<div class="thumb"><img src="${esc(l.pictureUrl)}" loading="lazy" referrerpolicy="no-referrer" alt="" onerror="this.parentNode.classList.add('noimg')"></div>`
     : '<div class="thumb noimg"></div>'
-  const detailTags = [...(decision.tags ?? []), ...tags].slice(0, 6)
+  const transferRaw = attrs['过户次数']
+  const visualTags = [...(decision.tags ?? []), ...tags].filter((t) => {
+    if (/(人想要|浏览|收藏)/.test(t)) return false
+    if (/(卖家已实名|回复率|卖家已售|已售\d+件)/.test(t)) return false
+    if (/^(低于|高于)中位|明显低于中位/.test(t)) return false
+    const transfer = String(transferRaw ?? '').match(/\d+/)
+    if (transfer && Number(transfer[0]) === 0 && /^(一手|个人一手)$/.test(t)) return false
+    return true
+  })
+  const detailTags = visualTags.slice(0, 6)
+  const detailDesc = cleanDetailDesc(detail?.desc, l.title)
   return `<li class="car">
     <a class="car-hit"${appAttr} href="${url}" target="_blank" rel="noopener">
       ${thumb}
@@ -128,13 +155,13 @@ function carCard({ listing, now, median, kind, oldPrice, standalone = false }) {
         <div class="chips">${chips.map((c) => `<span>${esc(c)}</span>`).join('')}</div>
         ${detailTags.length ? `<div class="dtags">${detailTags.map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}
         ${(decision.risks ?? []).length ? `<div class="drisk">${decision.risks.map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}
-        ${detail?.desc ? `<div class="desc2">${esc(detail.desc)}</div>` : ''}
+        ${detailDesc ? `<div class="desc2">${esc(detailDesc)}</div>` : ''}
         <div class="car-foot">
           <span class="seller">${sellerText ? `卖家：${esc(sellerText)}` : ''}${sellerMeta ? ` · ${esc(sellerMeta)}` : ''}</span>
         </div>
       </div>
     </a>
-    ${l.listingId ? `<div class="car-actions"><a class="open-app" href="${standalone ? `fleamarket://item?id=${encodeURIComponent(l.listingId)}` : `/go?id=${encodeURIComponent(l.listingId)}`}" ${standalone ? '' : 'target="_blank" rel="noopener"'}>打开闲鱼 App</a></div>` : ''}
+    ${l.listingId ? `<div class="car-actions">${standalone ? `<a class="open-app" data-app-id="${esc(l.listingId)}" href="${url}" target="_blank" rel="noopener">打开闲鱼 App</a>` : `<a class="open-app" href="/go?id=${encodeURIComponent(l.listingId)}" target="_blank" rel="noopener">打开闲鱼 App</a>`}</div>` : ''}
   </li>`
 }
 
@@ -365,6 +392,13 @@ const CLICK_JS = `
   }
   document.addEventListener('click', function(e){
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+    var explicit = e.target && e.target.closest ? e.target.closest('a[data-app-id]') : null
+    if (explicit) {
+      if (!isMobile) return
+      e.preventDefault()
+      openInApp(explicit.getAttribute('data-app-id'), explicit.getAttribute('href'))
+      return
+    }
     var a = e.target && e.target.closest ? e.target.closest('a[data-xianyu-id]') : null
     if (!a || !isMobile) return
     e.preventDefault()

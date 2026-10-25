@@ -369,6 +369,34 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
   const QUERY_TTL_MS = 5 * 60_000
 
   /** 同一关键词 5 分钟复用结果；并发查询共享 Promise，刷新可显式绕过缓存。 */
+  // 独立 HTML 文件把缩略图内嵌成 data URI：在企微文件/本地打开时也能显示
+  const inlineImageCache = new Map()
+  async function inlineImages(html, listings) {
+    const urls = [...new Set((listings ?? []).map((l) => l?.pictureUrl).filter((u) => /^https?:\/\//.test(String(u))))].slice(0, 20)
+    if (!urls.length) return html
+    const fetchOne = async (url) => {
+      const hit = inlineImageCache.get(url)
+      if (hit && Date.now() - hit.at < 60 * 60_000) return hit.uri
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(12000), headers: { 'user-agent': DEFAULT_UA } })
+        if (!res.ok) return null
+        const type = res.headers.get('content-type') || 'image/jpeg'
+        const buf = Buffer.from(await res.arrayBuffer())
+        const uri = `data:${type};base64,${buf.toString('base64')}`
+        inlineImageCache.set(url, { at: Date.now(), uri })
+        return uri
+      } catch { return null }
+    }
+    for (let i = 0; i < urls.length; i += 3) {
+      const batch = urls.slice(i, i + 3)
+      const uris = await Promise.all(batch.map(fetchOne))
+      for (let j = 0; j < batch.length; j++) {
+        if (uris[j]) html = html.split(`src="${batch[j]}"`).join(`src="${uris[j]}"`)
+      }
+    }
+    return html
+  }
+
   /** 生成单次查询的独立 HTML 文件（不依赖看板/隧道，可直接发企微文件）。 */
   async function writeQueryFile({ keyword, agg = {}, listings = [] } = {}) {
     const dir = path.join(reportDir, 'queries')
@@ -376,7 +404,8 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     const safe = String(keyword).replace(/[^\w\u4e00-\u9fa5-]+/g, '').slice(0, 30) || 'query'
     const stamp = localIso().slice(0, 19).replace('T', '-').replace(/:/g, '')
     const file = path.join(dir, `${safe}-西安在售-${stamp}.html`)
-    await writeAtomic(file, renderQueryPage({ keyword, agg, listings, standalone: true }))
+    const html = await inlineImages(renderQueryPage({ keyword, agg, listings, standalone: true }), listings)
+    await writeAtomic(file, html)
     return file
   }
 
