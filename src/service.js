@@ -6,7 +6,7 @@ import { summarizeListing } from './decision.js'
 import { loadState, pruneSeen, saveState } from './state.js'
 import { buildMessages, formatWan, Notifier } from './notify.js'
 import { generateReport } from './report.js'
-import { REPORT_NAME, writeHtmlReport } from './html-report.js'
+import { REPORT_NAME, renderQueryPage, writeHtmlReport } from './html-report.js'
 import { addWatchTargets, clearPending, getPending, loadWatchState, removeWatchTarget, setPending } from './runtime-store.js'
 
 const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -369,6 +369,21 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
   const QUERY_TTL_MS = 5 * 60_000
 
   /** 同一关键词 5 分钟复用结果；并发查询共享 Promise，刷新可显式绕过缓存。 */
+  /** 生成单次查询的独立 HTML 文件（不依赖看板/隧道，可直接发企微文件）。 */
+  async function writeQueryFile({ keyword, agg = {}, listings = [] } = {}) {
+    const dir = path.join(reportDir, 'queries')
+    await mkdir(dir, { recursive: true })
+    const safe = String(keyword).replace(/[^\w\u4e00-\u9fa5-]+/g, '').slice(0, 30) || 'query'
+    const stamp = localIso().slice(0, 19).replace('T', '-').replace(/:/g, '')
+    const file = path.join(dir, `${safe}-西安在售-${stamp}.html`)
+    await writeAtomic(file, renderQueryPage({ keyword, agg, listings, standalone: true }))
+    return file
+  }
+
+  async function sendFile(filePath) {
+    return notifier.sendFile(filePath, path.basename(filePath))
+  }
+
   async function lookup(keyword, { name = keyword, enrich = true, force = false } = {}) {
     const cleanKeyword = String(keyword ?? '').trim()
     if (!cleanKeyword || cleanKeyword.length > 40) throw new Error('车型关键词不能为空且不能超过 40 字')
@@ -503,7 +518,7 @@ export function createService({ config, statePath, reportDir, reportScriptPath, 
     return results
   }
 
-  return { scan, lookup, status, generateNow, readLatest, sendCards, loadTargets, addTargets, removeTarget, setTargetEnabled, pending, setPendingEntry, clearPendingEntry, setDashboard }
+  return { scan, lookup, status, generateNow, readLatest, sendCards, writeQueryFile, sendFile, loadTargets, addTargets, removeTarget, setTargetEnabled, pending, setPendingEntry, clearPendingEntry, setDashboard }
 }
 
 function toAggCsv(targets) {

@@ -175,19 +175,37 @@ export function apply(ctx, config) {
       const tunnelToken = String(config.dashboard?.tunnelToken || '').trim()
       let tunnel = null
       let disposed = false
-      const publish = () => service.setDashboard({
-        enabled: true,
-        port: started.port,
-        url: withDashboardToken(stableUrl || tunnel?.url || urls.lan || urls.local, dashboardToken),
-        publicUrl: withDashboardToken(stableUrl || tunnel?.url || null, dashboardToken),
-        stable: Boolean(stableUrl),
-        publicPending: !stableUrl && config.dashboard?.public !== false && !tunnel,
-        urls: {
-          local: withDashboardToken(urls.local, dashboardToken),
-          lan: withDashboardToken(urls.lan, dashboardToken),
-          public: withDashboardToken(stableUrl || tunnel?.url || null, dashboardToken),
-        },
-      })
+      let publicReady = Boolean(stableUrl)
+      const publish = () => {
+        const publicBase = stableUrl || (publicReady ? tunnel?.url : null)
+        service.setDashboard({
+          enabled: true,
+          port: started.port,
+          url: withDashboardToken(publicBase || urls.lan || urls.local, dashboardToken),
+          publicUrl: withDashboardToken(publicBase || null, dashboardToken),
+          stable: Boolean(stableUrl),
+          publicPending: !stableUrl && config.dashboard?.public !== false && !publicReady,
+          urls: {
+            local: withDashboardToken(urls.local, dashboardToken),
+            lan: withDashboardToken(urls.lan, dashboardToken),
+            public: withDashboardToken(publicBase || null, dashboardToken),
+          },
+        })
+      }
+
+      /** quick tunnel 日志出现 URL 后，Cloudflare 边缘可能还没生效；先确认能访问再发链接。 */
+      const waitForPublicUrl = async (url, timeoutMs = 30000) => {
+        if (!url) return false
+        const deadline = Date.now() + timeoutMs
+        while (!disposed && Date.now() < deadline) {
+          try {
+            const res = await fetch(new URL('/healthz', url), { signal: AbortSignal.timeout(5000), headers: { 'cache-control': 'no-cache' } })
+            if (res.ok) return true
+          } catch { /* retry */ }
+          await new Promise((r) => setTimeout(r, 1000))
+        }
+        return false
+      }
       publish()
       log.info('dashboard ready: %s (phone: %s)', urls.local, stableUrl || urls.lan || urls.local)
 
@@ -203,6 +221,16 @@ export function apply(ctx, config) {
             : await startQuickTunnel({ port: started.port, command: config.dashboard?.tunnelCommand || '', log })
           if (disposed) { t.close().catch(() => {}); return }
           tunnel = t
+          if (t.url && !stableUrl) {
+            const ok = await waitForPublicUrl(t.url)
+            if (!ok) {
+              log.warn('public tunnel url not ready: %s，重启隧道', t.url)
+              t.close().catch(() => {})
+              tunnel = null
+              throw new Error('公网隧道已创建但健康检查超时')
+            }
+          }
+          publicReady = true
           if (t.url) urls.public = t.url
           tunnelAttempts = 0
           publish()
@@ -211,6 +239,7 @@ export function apply(ctx, config) {
             if (disposed) return
             log.warn('public tunnel exited (code %s)，5s 后重试', code)
             tunnel = null
+            publicReady = false
             publish()
             if (tunnelAttempts < 3) {
               tunnelAttempts += 1
@@ -218,6 +247,8 @@ export function apply(ctx, config) {
             }
           })
         } catch (err) {
+          publicReady = false
+          publish()
           log.warn('public tunnel failed: %s（户外手机只能用局域网地址）', err.message)
           if (!disposed && tunnelAttempts < 3) {
             tunnelAttempts += 1

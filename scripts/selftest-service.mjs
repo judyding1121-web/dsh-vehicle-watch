@@ -400,6 +400,21 @@ await test('闲鱼客户端请求队列：并发 search 被串行化', async () 
   }
 })
 
+await test('查询可生成独立 HTML 文件（含打开闲鱼 App）', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'vw-file-'))
+  const client = makeFakeClient(new Map([
+    ['小米YU7', [listing('小米YU7', 'y1', 215000), listing('小米YU7', 'y2', 219800)]],
+  ]))
+  const svc = await makeService(dir, client)
+  const result = await svc.lookup('小米YU7', { name: '小米YU7' })
+  const file = await svc.writeQueryFile({ keyword: '小米YU7', agg: result.agg, listings: result.listings })
+  const html = await readFile(file, 'utf8')
+  assert.ok(html.includes('小米YU7'))
+  assert.ok(html.includes('打开闲鱼 App'))
+  assert.ok(html.includes('fleamarket://item?id='))
+  assert.ok(!html.includes('/go?id='), '独立 HTML 不依赖看板 /go 路由')
+})
+
 await test('隧道 URL 解析：命中 quick tunnel，忽略 api.trycloudflare.com', async () => {
   assert.equal(extractQuickTunnelUrl('api endpoint: https://api.trycloudflare.com'), null)
   assert.equal(extractQuickTunnelUrl('Visit it at https://self-film-jerry-liverpool.trycloudflare.com'), 'https://self-film-jerry-liverpool.trycloudflare.com')

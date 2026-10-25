@@ -78,6 +78,8 @@ p{color:#4b5563;font-size:14px;margin:8px 0}
   var ua = navigator.userAgent || '';
   var isWeCom = /wxwork|WeCom|MicroMessenger/i.test(ua);
   var tip = document.getElementById('tip');
+  var appBtn = document.getElementById('app');
+  if (appBtn) appBtn.href = /Android/i.test(ua) ? android : ios;
   if (isWeCom) {
     if (tip) { tip.hidden = false; tip.textContent = '当前在微信/企业微信内，无法直接打开闲鱼 App。请点右上角「…」→「在浏览器打开」，再点「打开闲鱼 App」。'; }
   } else {
@@ -119,8 +121,13 @@ export async function startDashboardServer({
     try {
       const url = new URL(req.url ?? '/', 'http://localhost')
       const pathname = decodeURIComponent(url.pathname)
+      if (pathname === '/healthz') {
+        send(res, 200, { ok: true, at: new Date().toISOString() })
+        return
+      }
       const supplied = url.searchParams.get('token') || String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')
-      if (!validDashboardToken(supplied, token)) {
+      // /go 只是无敏感数据的跳转落地页，独立消息/旧链接不带 token 也要能打开
+      if (pathname !== '/go' && !validDashboardToken(supplied, token)) {
         send(res, 401, { error: '看板链接已失效，请在企业微信重新发送“看板”' })
         return
       }

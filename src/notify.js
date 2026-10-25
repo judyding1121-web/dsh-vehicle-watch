@@ -1,4 +1,6 @@
 import { createHmac } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 
 const GOOFISH_HOME = 'https://www.goofish.com/'
 
@@ -207,6 +209,31 @@ export class Notifier {
       out.feishu = await this.postWithRetry(this.feishuWebhook, body, 'feishu')
     }
     return out
+  }
+
+  /** 把本地 HTML 等文件上传到企微群机器人并发送文件消息。 */
+  async sendFile(filePath, fileName = null) {
+    if (!this.wecomWebhook) return { skipped: 'no-webhook' }
+    try {
+      const key = new URL(this.wecomWebhook).searchParams.get('key')
+      if (!key) throw new Error('webhook 缺少 key')
+      const buf = await readFile(filePath)
+      const form = new FormData()
+      form.append('media', new Blob([buf], { type: 'text/html' }), fileName || path.basename(filePath))
+      const uploadUrl = `https://qyapi.weixin.qq.com/cgi-bin/webhook/upload_media?key=${encodeURIComponent(key)}&type=file`
+      const uploadRes = await fetch(uploadUrl, { method: 'POST', body: form, signal: AbortSignal.timeout(this.timeoutMs * 2) })
+      const uploadText = await uploadRes.text().catch(() => '')
+      if (!uploadRes.ok) throw new Error(`upload HTTP ${uploadRes.status} ${uploadText.slice(0, 120)}`)
+      let uploadJson
+      try { uploadJson = JSON.parse(uploadText) } catch { throw new Error(`upload 返回非 JSON：${uploadText.slice(0, 120)}`) }
+      if (uploadJson?.errcode != null && uploadJson.errcode !== 0) throw new Error(`upload errcode=${uploadJson.errcode} ${uploadJson.errmsg ?? ''}`)
+      if (!uploadJson?.media_id) throw new Error('upload 未返回 media_id')
+      const result = await this.postWithRetry(this.wecomWebhook, { msgtype: 'file', file: { media_id: uploadJson.media_id } }, 'wecom')
+      return { wecom: result }
+    } catch (err) {
+      this.log.warn?.('notify sendFile failed: %s', err?.message ?? err)
+      return { wecom: `error: ${err?.message ?? err}` }
+    }
   }
 
   async postWithRetry(url, body, channel) {

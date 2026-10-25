@@ -121,6 +121,8 @@ await test('看板 API 全链路鉴权，新增/停用/恢复/删除真实监控
   const base = `http://127.0.0.1:${server.port}`
   const post = (body, token = 'test-token') => fetch(`${base}/api/monitor?token=${token}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
   try {
+    assert.equal((await fetch(`${base}/healthz`)).status, 200, 'healthz 不应要求 token')
+    assert.equal((await fetch(`${base}/go?id=123`)).status, 200, '/go 落地页不应要求 token')
     assert.equal((await fetch(`${base}/`)).status, 401)
     assert.equal((await fetch(`${base}/latest.json`)).status, 401)
     assert.equal((await fetch(`${base}/query?q=x`)).status, 401)

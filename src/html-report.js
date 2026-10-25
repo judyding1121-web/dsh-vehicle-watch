@@ -82,7 +82,7 @@ function priceCompare(price, median) {
 }
 
 /** 一条车源卡片：整张卡可点；有详情时展示车况/卖家/历史价格等决策信息。 */
-function carCard({ listing, now, median, kind, oldPrice }) {
+function carCard({ listing, now, median, kind, oldPrice, standalone = false }) {
   const l = listing ?? {}
   const url = safeUrl(l.detailUrl)
   const price = Number(l.priceYuan)
@@ -134,6 +134,7 @@ function carCard({ listing, now, median, kind, oldPrice }) {
         </div>
       </div>
     </a>
+    ${l.listingId ? `<div class="car-actions"><a class="open-app" href="${standalone ? `fleamarket://item?id=${encodeURIComponent(l.listingId)}` : `/go?id=${encodeURIComponent(l.listingId)}`}" ${standalone ? '' : 'target="_blank" rel="noopener"'}>打开闲鱼 App</a></div>` : ''}
   </li>`
 }
 
@@ -288,6 +289,9 @@ a:hover{text-decoration:underline}
 .seller{font-size:12px;color:var(--muted)}
 .tags{display:flex;gap:4px;flex-wrap:wrap}
 .tag{display:inline-block;font-size:11px;color:var(--muted);background:#f8fafc;border:1px solid #eef0f3;border-radius:6px;padding:0 6px;white-space:nowrap}
+.car-actions{display:flex;justify-content:flex-end;margin:2px 4px 2px 0}
+.open-app{display:inline-block;font-size:12px;color:#0369a1;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:4px 10px;text-decoration:none;white-space:nowrap}
+.open-app:active{background:#e0f2fe}
 .dtags{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
 .dtags span{font-size:11px;color:#0369a1;background:#f0f9ff;border:1px solid #e0f2fe;border-radius:999px;padding:0 7px;line-height:20px}
 .drisk{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
@@ -336,7 +340,6 @@ const CLICK_JS = `
 (function(){
   var ua = navigator.userAgent || ''
   var isMobile = /iPhone|iPad|iPod|Android|Mobile/i.test(ua)
-  var isWeCom = /wxwork/i.test(ua) || /WeCom/i.test(ua) || /MicroMessenger/i.test(ua)
   var isAndroid = /Android/i.test(ua)
   function appUrl(id){
     if (isAndroid) return 'intent://item?id=' + encodeURIComponent(id) + '#Intent;scheme=fleamarket;package=com.taobao.idlefish;end'
@@ -348,13 +351,22 @@ const CLICK_JS = `
     document.addEventListener('visibilitychange', markHidden, { once: true })
     window.addEventListener('pagehide', markHidden, { once: true })
     setTimeout(function(){ if (!hidden && !document.hidden) window.location.href = fallbackUrl }, 1600)
-    window.location.href = appUrl(id)
+    var scheme = appUrl(id)
+    try {
+      var a = document.createElement('a')
+      a.href = scheme
+      a.style.display = 'none'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+    } catch (err) {
+      try { window.location.href = scheme } catch (e) {}
+    }
   }
   document.addEventListener('click', function(e){
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
     var a = e.target && e.target.closest ? e.target.closest('a[data-xianyu-id]') : null
     if (!a || !isMobile) return
-    if (isWeCom) return // 企微 WebView 无法拉起外部 App，直接打开网页
     e.preventDefault()
     openInApp(a.getAttribute('data-xianyu-id'), a.getAttribute('href'))
   })
@@ -432,7 +444,7 @@ export function renderHtmlReport({ latest, intervalHours = 2, title = '西安二
 }
 
 /** 单次查询结果页：干净的车源卡片列表，整卡可点。 */
-export function renderQueryPage({ keyword = '', city = '西安', agg = {}, listings = [], now = Date.now() } = {}) {
+export function renderQueryPage({ keyword = '', city = '西安', agg = {}, listings = [], now = Date.now(), standalone = false } = {}) {
   const items = (Array.isArray(listings) ? listings : [])
     .filter((l) => l && Number(l.priceYuan))
     .sort((a, b) => Number(a.priceYuan) - Number(b.priceYuan))
@@ -445,7 +457,7 @@ export function renderQueryPage({ keyword = '', city = '西安', agg = {}, listi
     min ? `最低 <b>${wan(min)}</b>` : null,
   ].filter(Boolean).join(' ｜ ')
   const list = items.length
-    ? `<section class="card"><ul class="items">${items.map((l) => carCard({ listing: l, now, median })).join('')}</ul></section>`
+    ? `<section class="card"><ul class="items">${items.map((l) => carCard({ listing: l, now, median, standalone })).join('')}</ul></section>`
     : '<section class="card"><div class="empty">没搜到在售车源</div></section>'
   return `<!doctype html>
 <html lang="zh-CN">

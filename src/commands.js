@@ -2,6 +2,7 @@ import { resolveModels } from './model-resolver.js'
 import { callbackButton, decodeAction, toButtonCard, urlButton } from './card-utils.js'
 
 const GOOFISH_HOME = 'https://www.goofish.com/'
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const CATALOG = [
   { id: 'songl', name: '宋L', keyword: '比亚迪宋L', referenceOfficialLow: 139800, referenceOfficialHigh: 249800 },
@@ -506,22 +507,50 @@ ${question}`, card: null }
     return lines.join('\n')
   }
 
+  /** 看板公网隧道可能刚启动：等它就绪再发链接，避免“链接很快生成但打不开”。 */
+  async function waitDashboardReady(status, timeoutMs = 60000) {
+    let current = status
+    if (!current?.dashboard?.publicPending) return current
+    const deadline = Date.now() + timeoutMs
+    while (current.dashboard?.publicPending && Date.now() < deadline) {
+      await sleep(500)
+      current = await service.status()
+    }
+    return current
+  }
+
   /** 按 AI 归一化后的关键词直接查，结果卡带样本/中位/最低。 */
   async function queryByKeyword(keyword, name, status, { force = false } = {}) {
     if (!keyword) return '请补充具体车型（品牌+车系，例如 小米YU7）。'
     let result
     try {
-      result = await service.lookup(keyword, { name: name || keyword, enrich: false, force })
+      result = await service.lookup(keyword, { name: name || keyword, enrich: true, force })
     } catch (err) {
       log.warn?.('query %s failed: %s', keyword, err.message)
       return `查询「${name || keyword}」失败：${err.message}`
     }
     const sample = result?.agg?.sampleCount ?? 0
-    if (!sample) return { text: `没搜到「${name || keyword}」的西安在售车源。可以换个说法，或直接发“品牌+车型”。`, noResults: true }
+    const title = name || keyword
+    if (!sample) return { text: `没搜到「${title}」的西安在售车源。可以换个说法，或直接发“品牌+车型”。`, noResults: true }
+
+    // 单次查询优先发独立 HTML 文件：不依赖看板/隧道链接，打开就是完整车源卡片页
+    if (status.webhooks?.wecom && typeof service.writeQueryFile === 'function' && typeof service.sendFile === 'function') {
+      try {
+        const file = await service.writeQueryFile({ keyword, agg: result.agg, listings: result.listings })
+        const sent = await service.sendFile(file)
+        if (sent?.wecom === 'ok') return { text: '已生成 HTML 结果文件，发到群里了。', card: null, noResults: false }
+        log.warn?.('send query file failed: %s', sent?.wecom ?? 'unknown')
+      } catch (err) {
+        log.warn?.('query file failed: %s', err.message)
+      }
+    }
+
+    // 文件发不出去时才退回看板卡片；等待公网链接就绪，避免早期不可用链接
+    status = await waitDashboardReady(status, 60000)
     return {
       text: '',
       card: queryCard({
-        name: name || keyword,
+        name: title,
         keyword,
         desc: `${sample} 台 · 中位 ${wan(result.agg.price?.median)} · 最低 ${wan(result.agg.price?.min)}`,
         url: queryPageUrl(status, keyword) || keywordUrl(keyword),

@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-vehicle-watch",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "监控西安四款车型（小米SU7/理想i6/问界M7/极氪001）的闲鱼二手车新上架与降价，推送到企业微信/飞书。",
   "license": "MIT",
